@@ -43,6 +43,12 @@ export default {
       auth: { persistSession: false }
     });
 
+    const supabaseAdmin = env.SUPABASE_SERVICE_ROLE_KEY
+      ? createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {
+        auth: { persistSession: false, autoRefreshToken: false }
+      })
+      : supabase;
+
     // --- Serve Images from Cloudflare R2 Bucket ---
     const imageMatch = path.match(/^\/adminApiBlog\/cdn\/image\/(.+)$/);
     if (imageMatch && request.method === 'GET') {
@@ -255,7 +261,7 @@ export default {
     if (publicBlogMatch && request.method === 'GET') {
       const slug = publicBlogMatch[1];
       const projectId = url.searchParams.get('project');
-      
+
       const { data: blog, error } = await supabase
         .from('blogs')
         .select('*')
@@ -382,31 +388,31 @@ export default {
 
   <div class="content">
     ${blog.paragraphs.map(p => {
-      let html = '';
-      if (p.subheading) {
-        html += `<h2>${p.subheading}</h2>`;
-      }
-      if (p.type === 'p') {
-        html += `<div>${p.text}</div>`;
-      } else if (p.type === 'img_row_2' || p.type === 'img_row_3') {
-        const count = p.type === 'img_row_2' ? 2 : 3;
-        const imgUrls = p.images || [];
-        html += `<div class="image-row">`;
-        for (let i = 0; i < count; i++) {
-          if (imgUrls[i]) {
-            html += `<img src="${imgUrls[i]}">`;
+        let html = '';
+        if (p.subheading) {
+          html += `<h2>${p.subheading}</h2>`;
+        }
+        if (p.type === 'p') {
+          html += `<div>${p.text}</div>`;
+        } else if (p.type === 'img_row_2' || p.type === 'img_row_3') {
+          const count = p.type === 'img_row_2' ? 2 : 3;
+          const imgUrls = p.images || [];
+          html += `<div class="image-row">`;
+          for (let i = 0; i < count; i++) {
+            if (imgUrls[i]) {
+              html += `<img src="${imgUrls[i]}">`;
+            }
           }
+          html += `</div>`;
+          if (p.text) html += `<div>${p.text}</div>`;
+        } else {
+          if (p.imageUrl) {
+            html += `<div class="image-block"><img src="${p.imageUrl}"></div>`;
+          }
+          if (p.text) html += `<div>${p.text}</div>`;
         }
-        html += `</div>`;
-        if (p.text) html += `<div>${p.text}</div>`;
-      } else {
-        if (p.imageUrl) {
-          html += `<div class="image-block"><img src="${p.imageUrl}"></div>`;
-        }
-        if (p.text) html += `<div>${p.text}</div>`;
-      }
-      return html;
-    }).join('')}
+        return html;
+      }).join('')}
   </div>
 </body>
 </html>
@@ -453,9 +459,28 @@ export default {
     if (path === '/adminApiBlog/auth/send-otp' && request.method === 'POST') {
       try {
         const { email } = await request.json();
-        
+
         // Validate admin email
-        if (email.toLowerCase() !== env.ADMIN_EMAIL.toLowerCase()) {
+        let isAuthorized = false;
+        try {
+          const { data: adminUser, error: adminError } = await supabaseAdmin
+            .from('admins')
+            .select('email')
+            .eq('email', email.toLowerCase())
+            .maybeSingle();
+
+          console.log(adminUser, adminError);
+
+          if (adminUser && adminUser.email) {
+            isAuthorized = true;
+
+          }
+        } catch (e) {
+          console.log(e);
+          // If query fails or table does not exist yet, fall back to environment config
+        }
+
+        if (!isAuthorized && email.toLowerCase() !== (env.ADMIN_EMAIL || '').toLowerCase()) {
           return new Response(JSON.stringify({ error: "Unauthorized email address." }), {
             status: 403,
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -466,9 +491,9 @@ export default {
         const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes from now
 
         // Store OTP in database
-        const { error } = await supabase
+        const { error } = await supabaseAdmin
           .from('auth_otps')
-          .upsert({ email: email.toLowerCase(), otp, expires_at: expiresAt.toISOString() });
+          .upsert({ email: email.toLowerCase(), otp, expires_at: expiresAt.toISOString() }, { onConflict: 'email' });
 
         if (error) throw error;
 
@@ -491,7 +516,7 @@ export default {
       try {
         const { email, otp } = await request.json();
 
-        const { data, error } = await supabase
+        const { data, error } = await supabaseAdmin
           .from('auth_otps')
           .select('*')
           .eq('email', email.toLowerCase())
@@ -518,11 +543,33 @@ export default {
           });
         }
 
+        // Retrieve role and project_id for token payload
+        let role = 'blogger';
+        let projectId = null;
+        try {
+          const { data: adminUser } = await supabaseAdmin
+            .from('admins')
+            .select('role, project_id')
+            .eq('email', email.toLowerCase())
+            .maybeSingle();
+
+          if (adminUser) {
+            if (adminUser.role) role = adminUser.role;
+            if (adminUser.project_id) projectId = adminUser.project_id;
+          } else if (email.toLowerCase() === (env.ADMIN_EMAIL || '').toLowerCase()) {
+            role = 'admin';
+          }
+        } catch (e) {
+          if (email.toLowerCase() === (env.ADMIN_EMAIL || '').toLowerCase()) {
+            role = 'admin';
+          }
+        }
+
         // Generate JWT Token
-        const token = await signJWT(env, { email: email.toLowerCase() });
+        const token = await signJWT(env, { email: email.toLowerCase(), role, projectId });
 
         // Clean up OTP
-        await supabase.from('auth_otps').delete().eq('email', email.toLowerCase());
+        await supabaseAdmin.from('auth_otps').delete().eq('email', email.toLowerCase());
 
         return new Response(JSON.stringify({ token }), {
           status: 200,
@@ -557,10 +604,11 @@ export default {
     // GET & POST Projects
     if (path === '/adminApiBlog/api/projects') {
       if (request.method === 'GET') {
-        const { data, error } = await supabase
-          .from('projects')
-          .select('*')
-          .order('created_at', { ascending: false });
+        let query = supabase.from('projects').select('*');
+        if (payload.projectId) {
+          query = query.eq('id', payload.projectId);
+        }
+        const { data, error } = await query.order('created_at', { ascending: false });
 
         if (error) {
           return new Response(JSON.stringify({ error: error.message }), { status: 500, headers: corsHeaders });
@@ -572,6 +620,9 @@ export default {
       }
 
       if (request.method === 'POST') {
+        if (payload.projectId) {
+          return new Response(JSON.stringify({ error: "Access denied. Restricted users cannot create projects." }), { status: 403, headers: corsHeaders });
+        }
         const { name } = await request.json();
         if (!name) {
           return new Response(JSON.stringify({ error: "Project name is required" }), { status: 400, headers: corsHeaders });
@@ -595,6 +646,9 @@ export default {
     // Delete Project
     const projectDeleteMatch = path.match(/^\/adminApiBlog\/api\/projects\/([a-zA-Z0-9_-]+)$/);
     if (projectDeleteMatch && request.method === 'DELETE') {
+      if (payload.projectId) {
+        return new Response(JSON.stringify({ error: "Access denied. Restricted users cannot delete projects." }), { status: 403, headers: corsHeaders });
+      }
       const { error } = await supabase
         .from('projects')
         .delete()
@@ -612,6 +666,9 @@ export default {
         const projectId = url.searchParams.get('projectId');
         if (!projectId) {
           return new Response(JSON.stringify({ error: "projectId is required" }), { status: 400, headers: corsHeaders });
+        }
+        if (payload.projectId && payload.projectId !== projectId) {
+          return new Response(JSON.stringify({ error: "Access denied to this project's blogs." }), { status: 403, headers: corsHeaders });
         }
         const { data, error } = await supabase
           .from('blogs')
@@ -634,6 +691,9 @@ export default {
 
           if (!title || !project_id) {
             return new Response(JSON.stringify({ error: "Title and project_id are required" }), { status: 400, headers: corsHeaders });
+          }
+          if (payload.projectId && payload.projectId !== project_id) {
+            return new Response(JSON.stringify({ error: "Access denied. You can only publish blogs to your assigned project." }), { status: 403, headers: corsHeaders });
           }
 
           // Generate simple clean slug
@@ -687,10 +747,21 @@ export default {
     // Delete Blog
     const blogDeleteMatch = path.match(/^\/adminApiBlog\/api\/blogs\/([a-zA-Z0-9_-]+)$/);
     if (blogDeleteMatch && request.method === 'DELETE') {
+      const blogId = blogDeleteMatch[1];
+      if (payload.projectId) {
+        const { data: blog } = await supabase
+          .from('blogs')
+          .select('project_id')
+          .eq('id', blogId)
+          .single();
+        if (blog && blog.project_id !== payload.projectId) {
+          return new Response(JSON.stringify({ error: "Access denied. You cannot delete this blog." }), { status: 403, headers: corsHeaders });
+        }
+      }
       const { error } = await supabase
         .from('blogs')
         .delete()
-        .eq('id', blogDeleteMatch[1]);
+        .eq('id', blogId);
 
       if (error) {
         return new Response(JSON.stringify({ error: error.message }), { status: 500, headers: corsHeaders });
@@ -725,6 +796,123 @@ export default {
       }
     }
 
+    // --- USER MANAGEMENT (RESTRICTED TO GLOBAL ADMINS/DEVELOPERS) ---
+    if (path === '/adminApiBlog/api/users') {
+      if (!payload || (payload.role !== 'admin' && payload.role !== 'developer') || payload.projectId) {
+        return new Response(JSON.stringify({ error: "Access denied. Only global admins/developers can manage users." }), { status: 403, headers: corsHeaders });
+      }
+
+      if (request.method === 'GET') {
+        const { data, error } = await supabase
+          .from('admins')
+          .select('*')
+          .order('created_at', { ascending: false });
+
+        if (error) {
+          return new Response(JSON.stringify({ error: error.message }), { status: 500, headers: corsHeaders });
+        }
+        return new Response(JSON.stringify({ users: data }), {
+          status: 200,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      if (request.method === 'POST') {
+        const { email, role, project_id } = await request.json();
+        if (!email || !role) {
+          return new Response(JSON.stringify({ error: "Email and role are required." }), { status: 400, headers: corsHeaders });
+        }
+
+        let userId = null;
+
+        if (env.SUPABASE_SERVICE_ROLE_KEY) {
+          try {
+            const { data: authUser, error: authError } = await supabaseAdmin.auth.admin.createUser({
+              email: email.toLowerCase(),
+              email_confirm: true,
+              password: Math.random().toString(36).substring(2, 15)
+            });
+
+            if (authError) {
+              if (authError.message.includes("already registered") || authError.message.includes("already exists")) {
+                const { data: existingUsers, error: listError } = await supabaseAdmin.auth.admin.listUsers();
+                if (listError) throw listError;
+                const matched = existingUsers.users.find(u => u.email.toLowerCase() === email.toLowerCase());
+                if (matched) {
+                  userId = matched.id;
+                } else {
+                  throw authError;
+                }
+              } else {
+                throw authError;
+              }
+            } else {
+              userId = authUser.user.id;
+            }
+          } catch (e) {
+            return new Response(JSON.stringify({ error: "Failed to create Auth user: " + e.message }), { status: 500, headers: corsHeaders });
+          }
+        } else {
+          return new Response(JSON.stringify({ error: "Configuration Error: SUPABASE_SERVICE_ROLE_KEY is required to manage console users." }), { status: 500, headers: corsHeaders });
+        }
+
+        const insertData = {
+          id: userId,
+          email: email.toLowerCase(),
+          role,
+          project_id: project_id || null
+        };
+
+        const { data, error } = await supabase
+          .from('admins')
+          .upsert(insertData)
+          .select()
+          .single();
+
+        if (error) {
+          return new Response(JSON.stringify({ error: error.message }), { status: 500, headers: corsHeaders });
+        }
+        return new Response(JSON.stringify({ user: data }), {
+          status: 201,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+    }
+
+    const deleteUserMatch = path.match(/^\/adminApiBlog\/api\/users\/([^/]+)$/);
+    if (deleteUserMatch && request.method === 'DELETE') {
+      if (!payload || (payload.role !== 'admin' && payload.role !== 'developer') || payload.projectId) {
+        return new Response(JSON.stringify({ error: "Access denied. Only global admins/developers can manage users." }), { status: 403, headers: corsHeaders });
+      }
+
+      const emailToDelete = decodeURIComponent(deleteUserMatch[1]).toLowerCase();
+
+      // Retrieve auth user ID first to delete them from auth.users
+      const { data: adminUser } = await supabase
+        .from('admins')
+        .select('id')
+        .eq('email', emailToDelete)
+        .maybeSingle();
+
+      if (adminUser && adminUser.id && env.SUPABASE_SERVICE_ROLE_KEY) {
+        try {
+          await supabaseAdmin.auth.admin.deleteUser(adminUser.id);
+        } catch (e) {
+          console.error("Failed to delete user from Supabase Auth:", e);
+        }
+      }
+
+      const { error } = await supabase
+        .from('admins')
+        .delete()
+        .eq('email', emailToDelete);
+
+      if (error) {
+        return new Response(JSON.stringify({ error: error.message }), { status: 500, headers: corsHeaders });
+      }
+      return new Response(JSON.stringify({ success: true }), { status: 200, headers: corsHeaders });
+    }
+
     // --- Serve HTML Dashboard ---
     if (path === '/adminApiBlog' && request.method === 'GET') {
       const dashboardHTML = `
@@ -740,9 +928,9 @@ export default {
   <script src="https://cdn.quilljs.com/1.3.6/quill.js"></script>
   <style>
     :root {
-      --bg: #0b0f19;
-      --card-bg: #111827;
-      --border: #1f2937;
+      --bg: #080710;
+      --card-bg: rgba(17, 24, 39, 0.7);
+      --border: rgba(255, 255, 255, 0.08);
       --text: #f9fafb;
       --muted: #9ca3af;
       --primary: #6366f1;
@@ -758,9 +946,12 @@ export default {
     }
     body {
       background-color: var(--bg);
+      background: radial-gradient(circle at 10% 20%, rgba(99, 102, 241, 0.15) 0%, transparent 40%),
+                  radial-gradient(circle at 90% 80%, rgba(16, 185, 129, 0.1) 0%, transparent 40%),
+                  var(--bg);
       color: var(--text);
       font-family: var(--font-sans);
-      padding: 40px 20px;
+      padding: 60px 20px;
       display: flex;
       justify-content: center;
       min-height: 100vh;
@@ -770,75 +961,96 @@ export default {
       max-width: 1000px;
       display: flex;
       flex-direction: column;
-      gap: 30px;
+      gap: 35px;
     }
     .card {
       background: var(--card-bg);
       border: 1px solid var(--border);
-      border-radius: 16px;
-      padding: 30px;
-      box-shadow: 0 4px 30px rgba(0, 0, 0, 0.4);
-      backdrop-filter: blur(10px);
+      border-radius: 20px;
+      padding: 35px;
+      box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+      backdrop-filter: blur(16px) saturate(120%);
+      transition: border-color 0.3s ease, box-shadow 0.3s ease;
+    }
+    .card:hover {
+      border-color: rgba(99, 102, 241, 0.3);
+      box-shadow: 0 10px 40px 0 rgba(99, 102, 241, 0.15);
     }
     h1, h2, h3 {
-      font-weight: 700;
+      font-weight: 800;
+      letter-spacing: -0.5px;
     }
     p {
       color: var(--muted);
-      font-size: 14px;
+      font-size: 14.5px;
       line-height: 1.6;
     }
     .btn {
-      background: var(--primary);
+      background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
       color: white;
       border: none;
-      padding: 12px 24px;
-      border-radius: 8px;
-      font-weight: 600;
+      padding: 14px 28px;
+      border-radius: 10px;
+      font-weight: 700;
       cursor: pointer;
-      transition: background 0.2s, transform 0.1s;
       font-size: 14px;
+      box-shadow: 0 4px 15px rgba(99, 102, 241, 0.3);
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
     }
     .btn:hover {
-      background: var(--primary-hover);
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px rgba(99, 102, 241, 0.5);
+      background: linear-gradient(135deg, #4f46e5 0%, #3730a3 100%);
     }
     .btn:active {
-      transform: scale(0.98);
+      transform: translateY(0);
     }
     .btn-secondary {
-      background: transparent;
-      border: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.1);
       color: var(--text);
+      box-shadow: none;
     }
     .btn-secondary:hover {
-      background: var(--border);
+      background: rgba(255, 255, 255, 0.1);
+      border-color: rgba(255, 255, 255, 0.2);
+      box-shadow: 0 4px 15px rgba(255, 255, 255, 0.05);
     }
     .btn-danger {
-      background: var(--danger);
+      background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+      box-shadow: 0 4px 15px rgba(239, 68, 68, 0.25);
     }
     .btn-danger:hover {
-      background: #dc2626;
+      background: linear-gradient(135deg, #dc2626 0%, #b91c1c 100%);
+      box-shadow: 0 6px 20px rgba(239, 68, 68, 0.45);
     }
     input, select, textarea {
       width: 100%;
-      padding: 12px;
-      background: #1f2937;
-      border: 1px solid var(--border);
+      padding: 14px;
+      background: rgba(31, 41, 55, 0.4);
+      border: 1px solid rgba(255, 255, 255, 0.1);
       color: white;
-      border-radius: 8px;
+      border-radius: 10px;
       font-family: inherit;
       font-size: 14px;
-      margin-top: 5px;
+      transition: all 0.3s ease;
+      margin-top: 6px;
     }
     input:focus, select:focus, textarea:focus {
       outline: none;
+      background: rgba(31, 41, 55, 0.7);
       border-color: var(--primary);
+      box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.25);
     }
     label {
       font-size: 12px;
-      font-weight: 600;
+      font-weight: 700;
       text-transform: uppercase;
-      letter-spacing: 0.5px;
+      letter-spacing: 0.75px;
       color: var(--muted);
     }
     .flex-group {
@@ -850,11 +1062,11 @@ export default {
     }
     /* Auth Form styling */
     .auth-box {
-      max-width: 400px;
-      margin: 100px auto;
+      max-width: 420px;
+      margin: 80px auto;
     }
     .auth-box input {
-      margin-bottom: 15px;
+      margin-bottom: 20px;
     }
     /* Dashboard view layout */
     .header-bar {
@@ -862,7 +1074,7 @@ export default {
       justify-content: space-between;
       align-items: center;
       border-bottom: 1px solid var(--border);
-      padding-bottom: 20px;
+      padding-bottom: 25px;
     }
     .tab-section {
       display: none;
@@ -873,44 +1085,57 @@ export default {
     .project-grid {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-      gap: 20px;
+      gap: 24px;
       margin-top: 20px;
     }
     .project-card {
-      background: #161e2e;
-      border: 1px solid var(--border);
-      padding: 20px;
-      border-radius: 12px;
+      background: rgba(22, 30, 46, 0.4);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      padding: 24px;
+      border-radius: 16px;
       display: flex;
       flex-direction: column;
       gap: 15px;
+      transition: all 0.3s ease;
+    }
+    .project-card:hover {
+      transform: translateY(-4px);
+      background: rgba(22, 30, 46, 0.7);
+      border-color: rgba(99, 102, 241, 0.3);
+      box-shadow: 0 12px 24px rgba(0, 0, 0, 0.25);
     }
     .blog-list-grid {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-      gap: 20px;
+      gap: 24px;
       margin-top: 20px;
     }
     .blog-card {
-      background: #161e2e;
-      border: 1px solid var(--border);
-      border-radius: 12px;
+      background: rgba(22, 30, 46, 0.4);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      border-radius: 16px;
       overflow: hidden;
       display: flex;
       flex-direction: column;
+      transition: all 0.3s ease;
+    }
+    .blog-card:hover {
+      transform: translateY(-4px);
+      border-color: rgba(99, 102, 241, 0.3);
+      box-shadow: 0 12px 24px rgba(0, 0, 0, 0.25);
     }
     .blog-card-img {
       height: 120px;
-      background: var(--border);
+      background: rgba(255, 255, 255, 0.03);
       object-fit: cover;
       width: 100%;
     }
     .blog-card-body {
-      padding: 15px;
+      padding: 20px;
       flex-grow: 1;
       display: flex;
       flex-direction: column;
-      gap: 10px;
+      gap: 12px;
     }
     .blog-card-title {
       font-size: 15px;
@@ -918,22 +1143,23 @@ export default {
     }
     /* Editor styling */
     .editor-block {
-      background: #161e2e;
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 20px;
-      margin-bottom: 20px;
+      background: rgba(22, 30, 46, 0.5);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      border-radius: 16px;
+      padding: 24px;
+      margin-bottom: 24px;
       position: relative;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
     }
     .editor-block-trash {
       position: absolute;
-      top: 15px;
-      right: 15px;
+      top: 20px;
+      right: 20px;
     }
     .quill-editor-wrapper {
       background: white;
       color: black;
-      border-radius: 8px;
+      border-radius: 10px;
       overflow: hidden;
       margin-top: 10px;
     }
@@ -941,26 +1167,32 @@ export default {
       background: #f3f4f6;
     }
     .snippet-box {
-      background: #111827;
-      border: 1px solid var(--border);
-      padding: 15px;
+      background: rgba(17, 24, 39, 0.9);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      padding: 20px;
       font-family: monospace;
-      font-size: 12px;
-      color: var(--accent);
-      border-radius: 8px;
+      font-size: 13px;
+      color: #10b981;
+      border-radius: 10px;
       overflow-x: auto;
       margin-top: 10px;
+      box-shadow: inset 0 2px 8px rgba(0,0,0,0.5);
     }
     .sitemap-item {
       display: flex;
       justify-content: space-between;
-      background: #161e2e;
-      border: 1px solid var(--border);
-      padding: 10px 15px;
-      border-radius: 8px;
-      margin-bottom: 10px;
+      background: rgba(22, 30, 46, 0.5);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      padding: 14px 20px;
+      border-radius: 10px;
+      margin-bottom: 12px;
       font-size: 13px;
       align-items: center;
+      transition: all 0.2s ease;
+    }
+    .sitemap-item:hover {
+      background: rgba(22, 30, 46, 0.8);
+      border-color: rgba(99, 102, 241, 0.2);
     }
   </style>
 </head>
@@ -998,7 +1230,11 @@ export default {
 
       <!-- PROJECTS VIEW -->
       <div id="panel-projects" class="tab-section tab-active">
-        <div class="card" style="margin-bottom: 25px;">
+        <div style="margin-bottom: 20px; display: flex; gap: 10px; justify-content: flex-end;">
+          <button class="btn btn-secondary global-only" onclick="showUsersPanel()">👥 User Permissions</button>
+        </div>
+        
+        <div class="card dev-only" style="margin-bottom: 25px;">
           <h3>Provision New Client Website Project</h3>
           <p style="margin-top: 5px; margin-bottom: 10px; font-size: 13px;">Creating a project adds a new row in your Supabase database with a unique Project ID and establishes a fast indexed query workspace to serve all its associated blogs.</p>
           <div class="flex-group" style="margin-top: 15px;">
@@ -1013,13 +1249,61 @@ export default {
         </div>
       </div>
 
+      <!-- USERS PANEL -->
+      <div id="panel-users" class="tab-section">
+        <button class="btn btn-secondary" style="margin-bottom: 20px;" onclick="showPanel('panel-projects')">← Back to Projects</button>
+        
+        <div class="card" style="margin-bottom: 25px;">
+          <h3>Add / Invite User</h3>
+          <p style="margin-top: 5px; margin-bottom: 15px; font-size: 13px;">Add a new user with a specific role. Assigning them to a specific project limits their visibility to only that project.</p>
+          <div class="flex-group" style="margin-top: 15px; flex-wrap: wrap; gap: 15px;">
+            <div style="flex: 2; min-width: 200px;">
+              <label>User Email</label>
+              <input type="email" id="new-user-email" placeholder="user@example.com" style="width:100%; height:42px;">
+            </div>
+            <div style="flex: 1; min-width: 120px;">
+              <label>Role</label>
+              <select id="new-user-role" style="width:100%; height:42px; background:#111827; border:1px solid rgba(255,255,255,0.08); border-radius:8px; color:#f9fafb; padding:0 10px;">
+                <option value="blogger">Blogger</option>
+                <option value="developer">Developer</option>
+                <option value="admin">Admin</option>
+              </select>
+            </div>
+            <div style="flex: 2; min-width: 200px;">
+              <label>Assign Project (Optional)</label>
+              <select id="new-user-project" style="width:100%; height:42px; background:#111827; border:1px solid rgba(255,255,255,0.08); border-radius:8px; color:#f9fafb; padding:0 10px;">
+                <option value="">All Projects (Global)</option>
+              </select>
+            </div>
+            <button class="btn" onclick="createUser()" style="margin-top:24px; height:42px;">Add User</button>
+          </div>
+        </div>
+
+        <h3 style="margin-bottom: 15px;">Console Users</h3>
+        <div class="card" style="padding:0; overflow:hidden; margin-bottom: 25px;">
+          <table style="width:100%; border-collapse:collapse; text-align:left;">
+            <thead>
+              <tr style="border-bottom:1px solid rgba(255,255,255,0.08); background:rgba(255,255,255,0.02);">
+                <th style="padding:15px; font-size:12px; text-transform:uppercase; color:var(--muted);">Email</th>
+                <th style="padding:15px; font-size:12px; text-transform:uppercase; color:var(--muted);">Role</th>
+                <th style="padding:15px; font-size:12px; text-transform:uppercase; color:var(--muted);">Assigned Project</th>
+                <th style="padding:15px; font-size:12px; text-transform:uppercase; color:var(--muted); text-align:right;">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="users-list">
+              <!-- Users load here -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+
       <!-- SINGLE PROJECT VIEW (Blogs & Integrations) -->
       <div id="panel-project-detail" class="tab-section">
         <div style="margin-bottom: 20px; display: flex; gap: 10px;">
-          <button class="btn btn-secondary" onclick="showPanel('panel-projects')">← Back to Projects</button>
+          <button id="btn-back-to-projects" class="btn btn-secondary" onclick="showPanel('panel-projects')">← Back to Projects</button>
           <button class="btn" onclick="newBlog()">✍️ New Blog Story</button>
-          <button class="btn btn-secondary" onclick="showIntegrations()">🔌 Get CDN Embed Snippet</button>
-          <button class="btn btn-secondary" onclick="showSitemaps()">🔗 Get Sitemap Links</button>
+          <button class="btn btn-secondary dev-only" onclick="showIntegrations()">🔌 Get CDN Embed Snippet</button>
+          <button class="btn btn-secondary dev-only" onclick="showSitemaps()">🔗 Get Sitemap Links</button>
         </div>
 
         <div class="card" style="margin-bottom: 25px;">
@@ -1120,11 +1404,59 @@ export default {
       showDashboard();
     }
 
+    function getPayload() {
+      if (!token) return null;
+      try {
+        const base64Url = token.split('.')[1];
+        const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+        const jsonPayload = decodeURIComponent(window.atob(base64).split('').map(function(c) {
+            return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
+        }).join(''));
+        return JSON.parse(jsonPayload);
+      } catch (e) {
+        return null;
+      }
+    }
+
     function showDashboard() {
       document.getElementById('view-auth').classList.remove('tab-active');
       document.getElementById('view-dashboard').classList.add('tab-active');
-      showPanel('panel-projects');
-      loadProjects();
+      
+      const payload = getPayload();
+      const role = payload ? payload.role : 'blogger';
+      const isGlobal = payload && !payload.projectId;
+      
+      if (role === 'admin' || role === 'developer') {
+        document.querySelectorAll('.dev-only').forEach(el => el.style.display = 'block');
+      } else {
+        document.querySelectorAll('.dev-only').forEach(el => {
+          if (el.tagName === 'BUTTON') el.style.display = 'none';
+          else el.style.display = 'none';
+        });
+      }
+
+      if ((role === 'admin' || role === 'developer') && isGlobal) {
+        document.querySelectorAll('.global-only').forEach(el => el.style.display = 'block');
+      } else {
+        document.querySelectorAll('.global-only').forEach(el => el.style.display = 'none');
+      }
+      
+      if (payload && payload.projectId) {
+        // Go straight to the single project detail
+        selectedProjectId = payload.projectId;
+        document.getElementById('detail-project-name').innerText = "Assigned Workspace";
+        document.getElementById('detail-project-id').innerText = "Project ID: " + payload.projectId;
+        
+        // Hide the back-to-projects button
+        document.getElementById('btn-back-to-projects').style.display = 'none';
+        
+        showPanel('panel-project-detail');
+        loadBlogs();
+      } else {
+        document.getElementById('btn-back-to-projects').style.display = 'block';
+        showPanel('panel-projects');
+        loadProjects();
+      }
     }
 
     function logout() {
@@ -1214,14 +1546,45 @@ export default {
       projectsCache.forEach(p => {
         const card = document.createElement('div');
         card.className = 'project-card';
-        card.innerHTML = \`
-          <h4 style="font-size:18px;">\${p.name}</h4>
-          <p style="font-family:monospace; font-size:11px; color:var(--accent);">ID: \${p.id}</p>
-          <div style="display:flex; gap:10px; margin-top:auto;">
-            <button class="btn btn-secondary" onclick="viewProject('\${p.id}', '\${p.name}')" style="flex:1;">Manage Blogs</button>
-            <button class="btn btn-danger" onclick="deleteProject('\${p.id}')" style="padding:10px;">🗑️</button>
-          </div>
-        \`;
+        
+        const title = document.createElement('h4');
+        title.style.fontSize = '18px';
+        title.innerText = p.name;
+        
+        const pid = document.createElement('p');
+        pid.style.fontFamily = 'monospace';
+        pid.style.fontSize = '11px';
+        pid.style.color = 'var(--accent)';
+        pid.innerText = 'ID: ' + p.id;
+        
+        const btnGroup = document.createElement('div');
+        btnGroup.style.display = 'flex';
+        btnGroup.style.gap = '10px';
+        btnGroup.style.marginTop = 'auto';
+        
+        const manageBtn = document.createElement('button');
+        manageBtn.className = 'btn btn-secondary';
+        manageBtn.style.flex = '1';
+        manageBtn.innerText = 'Manage Blogs';
+        manageBtn.onclick = () => viewProject(p.id, p.name);
+        
+        btnGroup.appendChild(manageBtn);
+
+        const payload = getPayload();
+        const role = payload ? payload.role : 'blogger';
+        if (role === 'admin' || role === 'developer') {
+          const deleteBtn = document.createElement('button');
+          deleteBtn.className = 'btn btn-danger';
+          deleteBtn.style.padding = '10px';
+          deleteBtn.innerText = '🗑️';
+          deleteBtn.onclick = () => deleteProject(p.id);
+          btnGroup.appendChild(deleteBtn);
+        }
+        
+        card.appendChild(title);
+        card.appendChild(pid);
+        card.appendChild(btnGroup);
+        
         listEl.appendChild(card);
       });
     }
@@ -1296,17 +1659,53 @@ export default {
         const card = document.createElement('div');
         card.className = 'blog-card';
         const fallback = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="100%" fill="%231f2937"><rect width="100%" height="100%"/></svg>';
-        card.innerHTML = \`
-          <img class="blog-card-img" src="\${b.main_image_url || fallback}" onerror="this.src='\${fallback}'">
-          <div class="blog-card-body">
-            <span class="blog-card-title">\${b.title}</span>
-            <span style="font-size:12px; color:var(--muted)">\${b.subtitle || ''}</span>
-            <div style="display:flex; gap:10px; margin-top:auto; padding-top:10px;">
-              <button class="btn btn-secondary" onclick="editBlog('\${b.id}')" style="flex:1; padding:8px;">Edit</button>
-              <button class="btn btn-danger" onclick="deleteBlog('\${b.id}')" style="padding:8px;">🗑️</button>
-            </div>
-          </div>
-        \`;
+        
+        const img = document.createElement('img');
+        img.className = 'blog-card-img';
+        img.src = b.main_image_url || fallback;
+        img.onerror = () => { img.src = fallback; };
+        
+        const body = document.createElement('div');
+        body.className = 'blog-card-body';
+        
+        const title = document.createElement('span');
+        title.className = 'blog-card-title';
+        title.innerText = b.title || '';
+        
+        const subtitle = document.createElement('span');
+        subtitle.style.fontSize = '12px';
+        subtitle.style.color = 'var(--muted)';
+        subtitle.innerText = b.subtitle || '';
+        
+        const btnGroup = document.createElement('div');
+        btnGroup.style.display = 'flex';
+        btnGroup.style.gap = '10px';
+        btnGroup.style.marginTop = 'auto';
+        btnGroup.style.paddingTop = '10px';
+        
+        const editBtn = document.createElement('button');
+        editBtn.className = 'btn btn-secondary';
+        editBtn.style.flex = '1';
+        editBtn.style.padding = '8px';
+        editBtn.innerText = 'Edit';
+        editBtn.onclick = () => editBlog(b.id);
+        
+        const deleteBtn = document.createElement('button');
+        deleteBtn.className = 'btn btn-danger';
+        deleteBtn.style.padding = '8px';
+        deleteBtn.innerText = '🗑️';
+        deleteBtn.onclick = () => deleteBlog(b.id);
+        
+        btnGroup.appendChild(editBtn);
+        btnGroup.appendChild(deleteBtn);
+        
+        body.appendChild(title);
+        body.appendChild(subtitle);
+        body.appendChild(btnGroup);
+        
+        card.appendChild(img);
+        card.appendChild(body);
+        
         listEl.appendChild(card);
       });
     }
@@ -1326,11 +1725,10 @@ export default {
 
     // --- INTEGRATIONS SNIPPET ---
     function showIntegrations() {
-      const snippet = \`<!-- Container where the blog grid will load -->
-<div id="certifyied-blog-container" data-project-id="\${selectedProjectId}" data-limit="15"></div>
-
-<!-- Load dynamic list with infinite pagination from Cloudflare Worker CDN -->
-<script src="\${baseUrl}/api/embed"><\/script>\`;
+      const snippet = '<!-- Container where the blog grid will load -->\\n' +
+        '<div id="certifyied-blog-container" data-project-id="' + selectedProjectId + '" data-limit="15"></div>\\n\\n' +
+        '<!-- Load dynamic list with infinite pagination from Cloudflare Worker CDN -->\\n' +
+        '<' + 'script src="' + baseUrl + '/api/embed"><' + '/script>';
       document.getElementById('integration-snippet').innerText = snippet;
       showPanel('panel-integrations');
     }
@@ -1351,22 +1749,151 @@ export default {
       }
       
       blogsCache.forEach(b => {
-        const blogUrl = \`\${baseUrl}/blog/\${b.slug}?project=\${selectedProjectId}\`;
+        const blogUrl = baseUrl + '/blog/' + b.slug + '?project=' + selectedProjectId;
         const div = document.createElement('div');
         div.className = 'sitemap-item';
-        div.innerHTML = \`
-          <span style="font-family:monospace; color:var(--accent);">\${blogUrl}</span>
-          <button class="btn btn-secondary" onclick="navigator.clipboard.writeText('\${blogUrl}'); alert('Copied link!');" style="padding:6px 12px; font-size:12px;">Copy</button>
-        \`;
+        
+        const span = document.createElement('span');
+        span.style.fontFamily = 'monospace';
+        span.style.color = 'var(--accent)';
+        span.innerText = blogUrl;
+        
+        const btn = document.createElement('button');
+        btn.className = 'btn btn-secondary';
+        btn.style.padding = '6px 12px';
+        btn.style.fontSize = '12px';
+        btn.innerText = 'Copy';
+        btn.onclick = () => {
+          navigator.clipboard.writeText(blogUrl);
+          alert('Copied link!');
+        };
+        
+        div.appendChild(span);
+        div.appendChild(btn);
         container.appendChild(div);
       });
       showPanel('panel-sitemaps');
     }
 
     function copyAllSitemaps() {
-      const links = blogsCache.map(b => \`\${baseUrl}/blog/\${b.slug}?project=\${selectedProjectId}\`).join('\\n');
+      const links = blogsCache.map(b => baseUrl + '/blog/' + b.slug + '?project=' + selectedProjectId).join('\\n');
       navigator.clipboard.writeText(links);
       alert("All blog links copied to clipboard!");
+    }
+
+    // --- USER PERMISSIONS MANAGEMENT ---
+    async function showUsersPanel() {
+      showPanel('panel-users');
+      const projectDropdown = document.getElementById('new-user-project');
+      projectDropdown.innerHTML = '<option value="">All Projects (Global)</option>';
+      projectsCache.forEach(p => {
+        const opt = document.createElement('option');
+        opt.value = p.id;
+        opt.innerText = p.name;
+        projectDropdown.appendChild(opt);
+      });
+      loadUsers();
+    }
+
+    async function loadUsers() {
+      try {
+        const res = await fetch(baseUrl + "/api/users", {
+          headers: { "Authorization": "Bearer " + token }
+        });
+        const data = await res.json();
+        const users = data.users || [];
+        renderUsers(users);
+      } catch (e) {
+        alert("Failed to load users: " + e.message);
+      }
+    }
+
+    function renderUsers(users) {
+      const listEl = document.getElementById('users-list');
+      listEl.innerHTML = '';
+      users.forEach(u => {
+        const tr = document.createElement('tr');
+        tr.style.borderBottom = '1px solid rgba(255,255,255,0.05)';
+        
+        const tdEmail = document.createElement('td');
+        tdEmail.style.padding = '15px';
+        tdEmail.style.fontSize = '14px';
+        tdEmail.innerText = u.email;
+        
+        const tdRole = document.createElement('td');
+        tdRole.style.padding = '15px';
+        tdRole.innerHTML = '<span style="background:rgba(99,102,241,0.15); color:var(--primary); padding:3px 8px; border-radius:4px; font-size:11px; text-transform:uppercase; font-weight:800;">' + u.role + '</span>';
+        
+        const tdProject = document.createElement('td');
+        tdProject.style.padding = '15px';
+        tdProject.style.fontSize = '13px';
+        if (u.project_id) {
+          const proj = projectsCache.find(p => p.id === u.project_id);
+          tdProject.innerText = proj ? proj.name : u.project_id;
+        } else {
+          tdProject.innerHTML = '<span style="color:var(--accent);">Global Access</span>';
+        }
+        
+        const tdActions = document.createElement('td');
+        tdActions.style.padding = '15px';
+        tdActions.style.textAlign = 'right';
+        
+        const payload = getPayload();
+        if (payload && payload.email !== u.email) {
+          const delBtn = document.createElement('button');
+          delBtn.className = 'btn btn-danger';
+          delBtn.style.padding = '6px 12px';
+          delBtn.style.fontSize = '12px';
+          delBtn.innerText = 'Revoke Access';
+          delBtn.onclick = () => deleteUser(u.email);
+          tdActions.appendChild(delBtn);
+        }
+        
+        tr.appendChild(tdEmail);
+        tr.appendChild(tdRole);
+        tr.appendChild(tdProject);
+        tr.appendChild(tdActions);
+        listEl.appendChild(tr);
+      });
+    }
+
+    async function createUser() {
+      const email = document.getElementById('new-user-email').value;
+      const role = document.getElementById('new-user-role').value;
+      const project_id = document.getElementById('new-user-project').value;
+      if (!email) return alert("Email is required!");
+      try {
+        const res = await fetch(baseUrl + "/api/users", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": "Bearer " + token
+          },
+          body: JSON.stringify({ email, role, project_id })
+        });
+        if (res.ok) {
+          document.getElementById('new-user-email').value = '';
+          loadUsers();
+        } else {
+          const data = await res.json();
+          alert(data.error);
+        }
+      } catch (e) {
+        alert("Error adding user");
+      }
+    }
+
+    async function deleteUser(email) {
+      if (!confirm("Are you sure you want to revoke access for " + email + "?")) return;
+      try {
+        const res = await fetch(baseUrl + "/api/users/" + encodeURIComponent(email), {
+          method: "DELETE",
+          headers: { "Authorization": "Bearer " + token }
+        });
+        if (res.ok) loadUsers();
+      } catch (e) {
+        alert("Failed to delete user");
+      }
     }
 
     // --- BLOG WRITER / EDITOR LOGIC ---
@@ -1476,7 +2003,7 @@ export default {
               <input type="file" id="\${blockId}-img-file" style="display:none;" onchange="uploadImage(this, '\${blockId}-img')">
             </div>
           </div>
-          \u0024{subInput}
+          \${subInput}
           <div style="margin-top:15px;">
             <label>Content Text</label>
             <div class="quill-editor-wrapper">
