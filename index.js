@@ -34,7 +34,10 @@ export default {
     }
 
     const url = new URL(request.url);
-    const path = url.pathname;
+    let path = url.pathname;
+    if (path.length > 1 && path.endsWith('/')) {
+      path = path.slice(0, -1);
+    }
 
     const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY, {
       auth: { persistSession: false }
