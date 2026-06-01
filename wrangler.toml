@@ -9,5 +9,5 @@ compatibility_flags = [ "nodejs_compat" ]
 # bucket_name = "blog-images"
 
 [observability.logs]
-enabled = false
+enabled = true
 invocation_logs = true

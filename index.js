@@ -1327,7 +1327,7 @@ export default {
 <div id="certifyied-blog-container" data-project-id="\${selectedProjectId}" data-limit="15"></div>
 
 <!-- Load dynamic list with infinite pagination from Cloudflare Worker CDN -->
-<script src="\${baseUrl}/api/embed"></script>\`;
+<script src="\${baseUrl}/api/embed"><\/script>\`;
       document.getElementById('integration-snippet').innerText = snippet;
       showPanel('panel-integrations');
     }
