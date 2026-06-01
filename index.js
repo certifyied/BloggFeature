@@ -261,7 +261,7 @@ export default {
         .single();
 
       if (error || !blog) {
-        return new Response('Blog post not found', { status: 404 });
+        return new Response('Blog post not found', { status: 404, headers: corsHeaders });
       }
 
       // Render a simple clean responsive reading view
@@ -409,7 +409,7 @@ export default {
 </html>
       `;
       return new Response(renderBlogHTML, {
-        headers: { 'Content-Type': 'text/html' }
+        headers: { 'Content-Type': 'text/html', ...corsHeaders }
       });
     }
 
@@ -730,7 +730,7 @@ export default {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Admin Dashboard - Certifyied Blog</title>
+  <title>Certifyied SEO Blog Engine - Client Portal</title>
   <!-- Google Fonts & Quill CSS -->
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link href="https://cdn.quilljs.com/1.3.6/quill.snow.css" rel="stylesheet">
@@ -966,8 +966,8 @@ export default {
     
     <!-- AUTH VIEW -->
     <div id="view-auth" class="card auth-box tab-section tab-active">
-      <h2 style="margin-bottom: 10px;">Developer Login</h2>
-      <p style="margin-bottom: 20px;">Enter your email to receive a one-time verification code.</p>
+      <h2 style="margin-bottom: 10px;">Certifyied Dev & Writer Portal</h2>
+      <p style="margin-bottom: 20px;">Access the multi-client SEO blog manager. Enter your admin email to receive a secure OTP code.</p>
       
       <div id="email-step">
         <label>Developer Email</label>
@@ -987,8 +987,8 @@ export default {
     <div id="view-dashboard" class="tab-section">
       <div class="card header-bar" style="margin-bottom: 20px;">
         <div>
-          <h2>Dev & Blogger Portal</h2>
-          <p>Configure multiple projects, publish posts to Supabase, and copy CDN embed codes.</p>
+          <h2>Certifyied Client Blog Engine</h2>
+          <p>Provision client website projects, write SEO-optimized stories, generate search sitemaps, and obtain CDN integration snippets.</p>
         </div>
         <button class="btn btn-secondary btn-danger" onclick="logout()">Log Out</button>
       </div>
@@ -996,10 +996,11 @@ export default {
       <!-- PROJECTS VIEW -->
       <div id="panel-projects" class="tab-section tab-active">
         <div class="card" style="margin-bottom: 25px;">
-          <h3>Create New Project</h3>
+          <h3>Provision New Client Website Project</h3>
+          <p style="margin-top: 5px; margin-bottom: 10px; font-size: 13px;">Creating a project adds a new row in your Supabase database with a unique Project ID and establishes a fast indexed query workspace to serve all its associated blogs.</p>
           <div class="flex-group" style="margin-top: 15px;">
-            <input type="text" id="new-project-name" placeholder="Project Name (e.g., Certifyied Landing Page)">
-            <button class="btn" onclick="createProject()">Add Project</button>
+            <input type="text" id="new-project-name" placeholder="Client / Site Name (e.g., Acme Agency, Spark eCommerce)">
+            <button class="btn" onclick="createProject()">Create Project Row</button>
           </div>
         </div>
 
@@ -1597,7 +1598,7 @@ export default {
 </html>
       `;
       return new Response(dashboardHTML, {
-        headers: { 'Content-Type': 'text/html' }
+        headers: { 'Content-Type': 'text/html', ...corsHeaders }
       });
     }
 

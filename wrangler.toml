@@ -7,3 +7,7 @@ compatibility_flags = [ "nodejs_compat" ]
 # [[r2_buckets]]
 # binding = "BUCKET"
 # bucket_name = "blog-images"
+
+[observability.logs]
+enabled = false
+invocation_logs = true
