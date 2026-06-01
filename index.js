@@ -1,0 +1,1628 @@
+import { createClient } from '@supabase/supabase-js';
+import nodemailer from 'nodemailer';
+import * as jose from 'jose';
+
+// Helper for JWT signing and verification using Web Crypto API via 'jose'
+async function signJWT(env, payload) {
+  const secret = new TextEncoder().encode(env.JWT_SECRET || 'fallback-secret-for-dev-only');
+  return await new jose.SignJWT(payload)
+    .setProtectedHeader({ alg: 'HS256' })
+    .setExpirationTime('24h')
+    .sign(secret);
+}
+
+async function verifyJWT(env, token) {
+  try {
+    const secret = new TextEncoder().encode(env.JWT_SECRET || 'fallback-secret-for-dev-only');
+    const { payload } = await jose.jwtVerify(token, secret);
+    return payload;
+  } catch (e) {
+    return null;
+  }
+}
+
+export default {
+  async fetch(request, env, ctx) {
+    const corsHeaders = {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS, DELETE',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    };
+
+    if (request.method === 'OPTIONS') {
+      return new Response('OK', { headers: corsHeaders });
+    }
+
+    const url = new URL(request.url);
+    const path = url.pathname;
+
+    const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY, {
+      auth: { persistSession: false }
+    });
+
+    // --- Serve Images from Cloudflare R2 Bucket ---
+    const imageMatch = path.match(/^\/adminApiBlog\/cdn\/image\/(.+)$/);
+    if (imageMatch && request.method === 'GET') {
+      try {
+        const key = decodeURIComponent(imageMatch[1]);
+        const object = await env.BUCKET.get(key);
+        if (!object) {
+          return new Response('Image not found', { status: 404, headers: corsHeaders });
+        }
+        const headers = new Headers(corsHeaders);
+        object.writeHttpMetadata(headers);
+        headers.set('etag', object.httpEtag);
+        headers.set('Cache-Control', 'public, max-age=31536000');
+        if (!headers.get('content-type')) {
+          if (key.endsWith('.png')) headers.set('content-type', 'image/png');
+          else if (key.endsWith('.gif')) headers.set('content-type', 'image/gif');
+          else if (key.endsWith('.svg')) headers.set('content-type', 'image/svg+xml');
+          else headers.set('content-type', 'image/jpeg');
+        }
+        return new Response(object.body, { headers });
+      } catch (e) {
+        return new Response(JSON.stringify({ error: e.message }), { status: 500, headers });
+      }
+    }
+
+    // --- Embed JS script for external sites ---
+    if (path === '/adminApiBlog/api/embed' && request.method === 'GET') {
+      const embedScript = `
+(function() {
+  const container = document.getElementById('certifyied-blog-container');
+  if (!container) return;
+
+  const projectId = container.dataset.projectId;
+  const initialLimit = parseInt(container.dataset.limit) || 5;
+  const workerOrigin = "${url.origin}";
+  
+  if (!projectId) {
+    container.innerHTML = '<p style="color:red;">Error: data-project-id attribute is missing!</p>';
+    return;
+  }
+
+  let page = 1;
+  const limit = 15;
+  let loading = false;
+  let hasMore = true;
+
+  // Insert base CSS
+  const style = document.createElement('style');
+  style.innerHTML = \`
+    .cf-blog-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      gap: 24px;
+      margin-bottom: 24px;
+    }
+    .cf-blog-card {
+      background: white;
+      border: 1px solid #e2e8f0;
+      border-radius: 12px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+    .cf-blog-card:hover {
+      transform: translateY(-4px);
+      box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1);
+    }
+    .cf-blog-image {
+      height: 180px;
+      background: #f1f5f9;
+      position: relative;
+    }
+    .cf-blog-image img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+    .cf-blog-content {
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      flex-grow: 1;
+    }
+    .cf-blog-title {
+      font-size: 18px;
+      font-weight: 700;
+      color: #0f172a;
+      margin: 8px 0;
+      line-height: 1.4;
+    }
+    .cf-blog-subtitle {
+      font-size: 14px;
+      color: #64748b;
+      margin-bottom: 16px;
+      flex-grow: 1;
+    }
+    .cf-blog-btn {
+      align-self: flex-start;
+      background: #0f172a;
+      color: white;
+      padding: 8px 16px;
+      border-radius: 6px;
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 600;
+      transition: background 0.2s;
+    }
+    .cf-blog-btn:hover {
+      background: #1e293b;
+    }
+    .cf-blog-loader {
+      display: none;
+      text-align: center;
+      padding: 20px;
+      font-size: 14px;
+      color: #64748b;
+    }
+  \`;
+  document.head.appendChild(style);
+
+  // Layout Setup
+  const gridEl = document.createElement('div');
+  gridEl.className = 'cf-blog-grid';
+  container.appendChild(gridEl);
+
+  const loaderEl = document.createElement('div');
+  loaderEl.className = 'cf-blog-loader';
+  loaderEl.innerText = 'Loading stories...';
+  container.appendChild(loaderEl);
+
+  // Fetch blogs helper
+  async function fetchBlogs(isInitial = false) {
+    if (loading || (!isInitial && !hasMore)) return;
+    loading = true;
+    loaderEl.style.display = 'block';
+
+    try {
+      const currentLimit = isInitial ? initialLimit : limit;
+      const currentOffset = isInitial ? 0 : (initialLimit + (page - 2) * limit);
+      
+      const res = await fetch(\`\${workerOrigin}/adminApiBlog/api/blogs/public?projectId=\${projectId}&limit=\${currentLimit}&offset=\${currentOffset}\`);
+      const data = await res.json();
+      
+      if (data.blogs && data.blogs.length > 0) {
+        data.blogs.forEach(blog => {
+          const card = document.createElement('div');
+          card.className = 'cf-blog-card';
+          
+          const fallbackImg = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="100%" fill="%23e2e8f0"><rect width="100%" height="100%"/></svg>';
+          const imgUrl = blog.main_image_url || fallbackImg;
+          
+          card.innerHTML = \`
+            <div class="cf-blog-image">
+              <img src="\${imgUrl}" onerror="this.src='\${fallbackImg}'">
+            </div>
+            <div class="cf-blog-content">
+              <h3 class="cf-blog-title">\${blog.title || 'Untitled'}</h3>
+              <p class="cf-blog-subtitle">\${blog.subtitle || ''}</p>
+              <a href="\${workerOrigin}/adminApiBlog/blog/\${blog.slug}?project=\${projectId}" target="_blank" class="cf-blog-btn">Read More</a>
+            </div>
+          \`;
+          gridEl.appendChild(card);
+        });
+
+        if (data.blogs.length < currentLimit) {
+          hasMore = false;
+        } else {
+          page++;
+        }
+      } else {
+        hasMore = false;
+        if (isInitial) {
+          gridEl.innerHTML = '<p style="color:#64748b; font-size:14px; grid-column:1/-1; text-align:center;">No published stories yet.</p>';
+        }
+      }
+    } catch (err) {
+      console.error("Error loading blogs:", err);
+    } finally {
+      loading = false;
+      loaderEl.style.display = 'none';
+    }
+  }
+
+  // Load first set
+  fetchBlogs(true);
+
+  // Setup infinite scroll
+  window.addEventListener('scroll', () => {
+    if ((window.innerHeight + window.scrollY) >= document.documentElement.scrollHeight - 100) {
+      fetchBlogs(false);
+    }
+  });
+})();
+      `;
+      return new Response(embedScript, {
+        headers: {
+          'Content-Type': 'application/javascript',
+          ...corsHeaders,
+        },
+      });
+    }
+
+    // --- Serve public single blog viewing page ---
+    const publicBlogMatch = path.match(/^\/adminApiBlog\/blog\/([a-zA-Z0-9_-]+)$/);
+    if (publicBlogMatch && request.method === 'GET') {
+      const slug = publicBlogMatch[1];
+      const projectId = url.searchParams.get('project');
+      
+      const { data: blog, error } = await supabase
+        .from('blogs')
+        .select('*')
+        .eq('slug', slug)
+        .eq('project_id', projectId)
+        .single();
+
+      if (error || !blog) {
+        return new Response('Blog post not found', { status: 404 });
+      }
+
+      // Render a simple clean responsive reading view
+      const renderBlogHTML = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${blog.title}</title>
+  <meta name="description" content="${blog.subtitle || ''}">
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Playfair+Display:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #fafafa;
+      --text: #1e293b;
+      --muted: #64748b;
+      --font-sans: 'Plus Jakarta Sans', sans-serif;
+      --font-serif: 'Playfair Display', Georgia, serif;
+    }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font-sans);
+      margin: 0;
+      padding: 0;
+      line-height: 1.6;
+    }
+    header {
+      max-width: 800px;
+      margin: 60px auto 40px auto;
+      padding: 0 20px;
+      text-align: center;
+    }
+    h1 {
+      font-family: var(--font-serif);
+      font-size: 2.8rem;
+      color: #0f172a;
+      margin-bottom: 15px;
+      line-height: 1.2;
+    }
+    .subtitle {
+      font-size: 1.25rem;
+      color: var(--muted);
+      margin-bottom: 20px;
+    }
+    .meta {
+      font-size: 0.9rem;
+      color: var(--muted);
+      font-weight: 500;
+    }
+    .hero-image {
+      max-width: 900px;
+      margin: 0 auto 40px auto;
+      border-radius: 16px;
+      overflow: hidden;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.05);
+    }
+    .hero-image img {
+      width: 100%;
+      max-height: 500px;
+      object-fit: cover;
+    }
+    .content {
+      max-width: 680px;
+      margin: 0 auto 80px auto;
+      padding: 0 20px;
+      font-size: 1.15rem;
+      color: #334155;
+    }
+    .content p {
+      margin-bottom: 1.8rem;
+      line-height: 1.8;
+    }
+    .content h2, .content h3 {
+      font-family: var(--font-serif);
+      color: #0f172a;
+      margin-top: 2.5rem;
+      margin-bottom: 1rem;
+    }
+    .image-block {
+      margin: 2.5rem 0;
+      text-align: center;
+    }
+    .image-block img {
+      width: 100%;
+      border-radius: 12px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+    }
+    .image-row {
+      display: flex;
+      gap: 15px;
+      margin: 2.5rem 0;
+    }
+    .image-row img {
+      flex: 1;
+      width: 100%;
+      border-radius: 8px;
+      object-fit: cover;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>${blog.title}</h1>
+    <p class="subtitle">${blog.subtitle || ''}</p>
+    <div class="meta">Published on ${new Date(blog.created_at).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })}</div>
+  </header>
+  
+  ${blog.main_image_url ? `
+  <div class="hero-image">
+    <img src="${blog.main_image_url}">
+  </div>
+  ` : ''}
+
+  <div class="content">
+    ${blog.paragraphs.map(p => {
+      let html = '';
+      if (p.subheading) {
+        html += `<h2>${p.subheading}</h2>`;
+      }
+      if (p.type === 'p') {
+        html += `<div>${p.text}</div>`;
+      } else if (p.type === 'img_row_2' || p.type === 'img_row_3') {
+        const count = p.type === 'img_row_2' ? 2 : 3;
+        const imgUrls = p.images || [];
+        html += `<div class="image-row">`;
+        for (let i = 0; i < count; i++) {
+          if (imgUrls[i]) {
+            html += `<img src="${imgUrls[i]}">`;
+          }
+        }
+        html += `</div>`;
+        if (p.text) html += `<div>${p.text}</div>`;
+      } else {
+        if (p.imageUrl) {
+          html += `<div class="image-block"><img src="${p.imageUrl}"></div>`;
+        }
+        if (p.text) html += `<div>${p.text}</div>`;
+      }
+      return html;
+    }).join('')}
+  </div>
+</body>
+</html>
+      `;
+      return new Response(renderBlogHTML, {
+        headers: { 'Content-Type': 'text/html' }
+      });
+    }
+
+    // Public blogs fetch (for CDN JS snippet)
+    if (path === '/adminApiBlog/api/blogs/public' && request.method === 'GET') {
+      const projectId = url.searchParams.get('projectId');
+      const limit = parseInt(url.searchParams.get('limit')) || 15;
+      const offset = parseInt(url.searchParams.get('offset')) || 0;
+
+      if (!projectId) {
+        return new Response(JSON.stringify({ error: "projectId is required" }), {
+          status: 400,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      const { data, error } = await supabase
+        .from('blogs')
+        .select('id, title, subtitle, main_image_url, slug, created_at')
+        .eq('project_id', projectId)
+        .order('created_at', { ascending: false })
+        .range(offset, offset + limit - 1);
+
+      if (error) {
+        return new Response(JSON.stringify({ error: error.message }), {
+          status: 500,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      return new Response(JSON.stringify({ blogs: data }), {
+        status: 200,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    // --- Authentication Actions ---
+    if (path === '/adminApiBlog/auth/send-otp' && request.method === 'POST') {
+      try {
+        const { email } = await request.json();
+        
+        // Validate admin email
+        if (email.toLowerCase() !== env.ADMIN_EMAIL.toLowerCase()) {
+          return new Response(JSON.stringify({ error: "Unauthorized email address." }), {
+            status: 403,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes from now
+
+        // Store OTP in database
+        const { error } = await supabase
+          .from('auth_otps')
+          .upsert({ email: email.toLowerCase(), otp, expires_at: expiresAt.toISOString() });
+
+        if (error) throw error;
+
+        // Send Email using Gmail SMTP config
+        await sendOTPEmail(env, email, otp);
+
+        return new Response(JSON.stringify({ message: "OTP sent successfully." }), {
+          status: 200,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+    }
+
+    if (path === '/adminApiBlog/auth/verify-otp' && request.method === 'POST') {
+      try {
+        const { email, otp } = await request.json();
+
+        const { data, error } = await supabase
+          .from('auth_otps')
+          .select('*')
+          .eq('email', email.toLowerCase())
+          .single();
+
+        if (error || !data) {
+          return new Response(JSON.stringify({ error: "Invalid login session." }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        if (data.otp !== otp) {
+          return new Response(JSON.stringify({ error: "Incorrect OTP." }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        if (new Date() > new Date(data.expires_at)) {
+          return new Response(JSON.stringify({ error: "OTP has expired." }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        // Generate JWT Token
+        const token = await signJWT(env, { email: email.toLowerCase() });
+
+        // Clean up OTP
+        await supabase.from('auth_otps').delete().eq('email', email.toLowerCase());
+
+        return new Response(JSON.stringify({ token }), {
+          status: 200,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+    }
+
+    // --- PROTECTED ENDPOINTS BARRIER ---
+    let payload = null;
+    const authHeader = request.headers.get('Authorization');
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      const token = authHeader.substring(7);
+      payload = await verifyJWT(env, token);
+    }
+
+    // Require authentication for all /api/ admin requests
+    if (path.startsWith('/adminApiBlog/api/') && !path.endsWith('/public') && !path.endsWith('/embed')) {
+      if (!payload) {
+        return new Response(JSON.stringify({ error: "Unauthorized access. Invalid or expired token." }), {
+          status: 401,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+    }
+
+    // GET & POST Projects
+    if (path === '/adminApiBlog/api/projects') {
+      if (request.method === 'GET') {
+        const { data, error } = await supabase
+          .from('projects')
+          .select('*')
+          .order('created_at', { ascending: false });
+
+        if (error) {
+          return new Response(JSON.stringify({ error: error.message }), { status: 500, headers: corsHeaders });
+        }
+        return new Response(JSON.stringify({ projects: data }), {
+          status: 200,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      if (request.method === 'POST') {
+        const { name } = await request.json();
+        if (!name) {
+          return new Response(JSON.stringify({ error: "Project name is required" }), { status: 400, headers: corsHeaders });
+        }
+        const { data, error } = await supabase
+          .from('projects')
+          .insert({ name })
+          .select()
+          .single();
+
+        if (error) {
+          return new Response(JSON.stringify({ error: error.message }), { status: 500, headers: corsHeaders });
+        }
+        return new Response(JSON.stringify(data), {
+          status: 201,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+    }
+
+    // Delete Project
+    const projectDeleteMatch = path.match(/^\/adminApiBlog\/api\/projects\/([a-zA-Z0-9_-]+)$/);
+    if (projectDeleteMatch && request.method === 'DELETE') {
+      const { error } = await supabase
+        .from('projects')
+        .delete()
+        .eq('id', projectDeleteMatch[1]);
+
+      if (error) {
+        return new Response(JSON.stringify({ error: error.message }), { status: 500, headers: corsHeaders });
+      }
+      return new Response(JSON.stringify({ success: true }), { status: 200, headers: corsHeaders });
+    }
+
+    // GET & POST Blogs for Admin
+    if (path === '/adminApiBlog/api/blogs') {
+      if (request.method === 'GET') {
+        const projectId = url.searchParams.get('projectId');
+        if (!projectId) {
+          return new Response(JSON.stringify({ error: "projectId is required" }), { status: 400, headers: corsHeaders });
+        }
+        const { data, error } = await supabase
+          .from('blogs')
+          .select('*')
+          .eq('project_id', projectId)
+          .order('created_at', { ascending: false });
+
+        if (error) {
+          return new Response(JSON.stringify({ error: error.message }), { status: 500, headers: corsHeaders });
+        }
+        return new Response(JSON.stringify({ blogs: data }), {
+          status: 200,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      if (request.method === 'POST') {
+        try {
+          const { id, project_id, title, subtitle, main_image_url, paragraphs } = await request.json();
+
+          if (!title || !project_id) {
+            return new Response(JSON.stringify({ error: "Title and project_id are required" }), { status: 400, headers: corsHeaders });
+          }
+
+          // Generate simple clean slug
+          const slug = title
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, '-')
+            .replace(/(^-|-$)+/g, '');
+
+          const payload = {
+            project_id,
+            title,
+            subtitle,
+            main_image_url,
+            paragraphs,
+            slug,
+            updated_at: new Date().toISOString()
+          };
+
+          let result;
+          if (id) {
+            // Update
+            const { data, error } = await supabase
+              .from('blogs')
+              .update(payload)
+              .eq('id', id)
+              .select()
+              .single();
+            if (error) throw error;
+            result = data;
+          } else {
+            // Insert
+            const { data, error } = await supabase
+              .from('blogs')
+              .insert(payload)
+              .select()
+              .single();
+            if (error) throw error;
+            result = data;
+          }
+
+          return new Response(JSON.stringify(result), {
+            status: 200,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        } catch (e) {
+          return new Response(JSON.stringify({ error: e.message }), { status: 500, headers: corsHeaders });
+        }
+      }
+    }
+
+    // Delete Blog
+    const blogDeleteMatch = path.match(/^\/adminApiBlog\/api\/blogs\/([a-zA-Z0-9_-]+)$/);
+    if (blogDeleteMatch && request.method === 'DELETE') {
+      const { error } = await supabase
+        .from('blogs')
+        .delete()
+        .eq('id', blogDeleteMatch[1]);
+
+      if (error) {
+        return new Response(JSON.stringify({ error: error.message }), { status: 500, headers: corsHeaders });
+      }
+      return new Response(JSON.stringify({ success: true }), { status: 200, headers: corsHeaders });
+    }
+
+    // POST Image Upload to Cloudflare R2
+    if (path === '/adminApiBlog/api/upload' && request.method === 'POST') {
+      try {
+        const fileKey = `${crypto.randomUUID()}.jpg`;
+        const contentType = request.headers.get('content-type') || 'image/jpeg';
+        const bodyArrayBuffer = await request.arrayBuffer();
+
+        await env.BUCKET.put(fileKey, bodyArrayBuffer, {
+          httpMetadata: { contentType }
+        });
+
+        const accessUrl = `${url.origin}/adminApiBlog/cdn/image/${encodeURIComponent(fileKey)}`;
+        return new Response(JSON.stringify({ url: accessUrl }), {
+          status: 200,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: corsHeaders });
+      }
+    }
+
+    // --- Serve HTML Dashboard ---
+    if (path === '/adminApiBlog' && request.method === 'GET') {
+      const dashboardHTML = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Admin Dashboard - Certifyied Blog</title>
+  <!-- Google Fonts & Quill CSS -->
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link href="https://cdn.quilljs.com/1.3.6/quill.snow.css" rel="stylesheet">
+  <script src="https://cdn.quilljs.com/1.3.6/quill.js"></script>
+  <style>
+    :root {
+      --bg: #0b0f19;
+      --card-bg: #111827;
+      --border: #1f2937;
+      --text: #f9fafb;
+      --muted: #9ca3af;
+      --primary: #6366f1;
+      --primary-hover: #4f46e5;
+      --accent: #10b981;
+      --danger: #ef4444;
+      --font-sans: 'Plus Jakarta Sans', sans-serif;
+    }
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    body {
+      background-color: var(--bg);
+      color: var(--text);
+      font-family: var(--font-sans);
+      padding: 40px 20px;
+      display: flex;
+      justify-content: center;
+      min-height: 100vh;
+    }
+    .container {
+      width: 100%;
+      max-width: 1000px;
+      display: flex;
+      flex-direction: column;
+      gap: 30px;
+    }
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 30px;
+      box-shadow: 0 4px 30px rgba(0, 0, 0, 0.4);
+      backdrop-filter: blur(10px);
+    }
+    h1, h2, h3 {
+      font-weight: 700;
+    }
+    p {
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.6;
+    }
+    .btn {
+      background: var(--primary);
+      color: white;
+      border: none;
+      padding: 12px 24px;
+      border-radius: 8px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s, transform 0.1s;
+      font-size: 14px;
+    }
+    .btn:hover {
+      background: var(--primary-hover);
+    }
+    .btn:active {
+      transform: scale(0.98);
+    }
+    .btn-secondary {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text);
+    }
+    .btn-secondary:hover {
+      background: var(--border);
+    }
+    .btn-danger {
+      background: var(--danger);
+    }
+    .btn-danger:hover {
+      background: #dc2626;
+    }
+    input, select, textarea {
+      width: 100%;
+      padding: 12px;
+      background: #1f2937;
+      border: 1px solid var(--border);
+      color: white;
+      border-radius: 8px;
+      font-family: inherit;
+      font-size: 14px;
+      margin-top: 5px;
+    }
+    input:focus, select:focus, textarea:focus {
+      outline: none;
+      border-color: var(--primary);
+    }
+    label {
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--muted);
+    }
+    .flex-group {
+      display: flex;
+      gap: 15px;
+    }
+    .flex-group > * {
+      flex: 1;
+    }
+    /* Auth Form styling */
+    .auth-box {
+      max-width: 400px;
+      margin: 100px auto;
+    }
+    .auth-box input {
+      margin-bottom: 15px;
+    }
+    /* Dashboard view layout */
+    .header-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 20px;
+    }
+    .tab-section {
+      display: none;
+    }
+    .tab-active {
+      display: block;
+    }
+    .project-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 20px;
+      margin-top: 20px;
+    }
+    .project-card {
+      background: #161e2e;
+      border: 1px solid var(--border);
+      padding: 20px;
+      border-radius: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 15px;
+    }
+    .blog-list-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 20px;
+      margin-top: 20px;
+    }
+    .blog-card {
+      background: #161e2e;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    .blog-card-img {
+      height: 120px;
+      background: var(--border);
+      object-fit: cover;
+      width: 100%;
+    }
+    .blog-card-body {
+      padding: 15px;
+      flex-grow: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .blog-card-title {
+      font-size: 15px;
+      font-weight: 700;
+    }
+    /* Editor styling */
+    .editor-block {
+      background: #161e2e;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 20px;
+      position: relative;
+    }
+    .editor-block-trash {
+      position: absolute;
+      top: 15px;
+      right: 15px;
+    }
+    .quill-editor-wrapper {
+      background: white;
+      color: black;
+      border-radius: 8px;
+      overflow: hidden;
+      margin-top: 10px;
+    }
+    .ql-toolbar {
+      background: #f3f4f6;
+    }
+    .snippet-box {
+      background: #111827;
+      border: 1px solid var(--border);
+      padding: 15px;
+      font-family: monospace;
+      font-size: 12px;
+      color: var(--accent);
+      border-radius: 8px;
+      overflow-x: auto;
+      margin-top: 10px;
+    }
+    .sitemap-item {
+      display: flex;
+      justify-content: space-between;
+      background: #161e2e;
+      border: 1px solid var(--border);
+      padding: 10px 15px;
+      border-radius: 8px;
+      margin-bottom: 10px;
+      font-size: 13px;
+      align-items: center;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    
+    <!-- AUTH VIEW -->
+    <div id="view-auth" class="card auth-box tab-section tab-active">
+      <h2 style="margin-bottom: 10px;">Developer Login</h2>
+      <p style="margin-bottom: 20px;">Enter your email to receive a one-time verification code.</p>
+      
+      <div id="email-step">
+        <label>Developer Email</label>
+        <input type="email" id="auth-email" placeholder="email@example.com">
+        <button class="btn" style="width: 100%; margin-top: 10px;" onclick="sendOTP()">Send OTP</button>
+      </div>
+
+      <div id="otp-step" style="display: none;">
+        <label>Enter 6-Digit OTP</label>
+        <input type="text" id="auth-otp" placeholder="123456" maxlength="6">
+        <button class="btn" style="width: 100%; margin-top: 10px;" onclick="verifyOTP()">Verify & Log In</button>
+        <button class="btn btn-secondary" style="width: 100%; margin-top: 10px;" onclick="showEmailStep()">Back</button>
+      </div>
+    </div>
+
+    <!-- MAIN DASHBOARD -->
+    <div id="view-dashboard" class="tab-section">
+      <div class="card header-bar" style="margin-bottom: 20px;">
+        <div>
+          <h2>Dev & Blogger Portal</h2>
+          <p>Configure multiple projects, publish posts to Supabase, and copy CDN embed codes.</p>
+        </div>
+        <button class="btn btn-secondary btn-danger" onclick="logout()">Log Out</button>
+      </div>
+
+      <!-- PROJECTS VIEW -->
+      <div id="panel-projects" class="tab-section tab-active">
+        <div class="card" style="margin-bottom: 25px;">
+          <h3>Create New Project</h3>
+          <div class="flex-group" style="margin-top: 15px;">
+            <input type="text" id="new-project-name" placeholder="Project Name (e.g., Certifyied Landing Page)">
+            <button class="btn" onclick="createProject()">Add Project</button>
+          </div>
+        </div>
+
+        <h3 style="margin-bottom: 15px;">Your Projects</h3>
+        <div id="projects-list" class="project-grid">
+          <!-- Projects load here -->
+        </div>
+      </div>
+
+      <!-- SINGLE PROJECT VIEW (Blogs & Integrations) -->
+      <div id="panel-project-detail" class="tab-section">
+        <div style="margin-bottom: 20px; display: flex; gap: 10px;">
+          <button class="btn btn-secondary" onclick="showPanel('panel-projects')">← Back to Projects</button>
+          <button class="btn" onclick="newBlog()">✍️ New Blog Story</button>
+          <button class="btn btn-secondary" onclick="showIntegrations()">🔌 Get CDN Embed Snippet</button>
+          <button class="btn btn-secondary" onclick="showSitemaps()">🔗 Get Sitemap Links</button>
+        </div>
+
+        <div class="card" style="margin-bottom: 25px;">
+          <h2 id="detail-project-name">Project Details</h2>
+          <p id="detail-project-id" style="font-family: monospace; font-size: 12px; margin-top: 5px; color: var(--accent);"></p>
+        </div>
+
+        <h3 style="margin-bottom: 15px;">Published Stories</h3>
+        <div id="blogs-list" class="blog-list-grid">
+          <!-- Blogs load here -->
+        </div>
+      </div>
+
+      <!-- INTEGRATIONS MODAL/PANEL -->
+      <div id="panel-integrations" class="tab-section">
+        <button class="btn btn-secondary" style="margin-bottom: 20px;" onclick="showPanel('panel-project-detail')">← Back to Blogs</button>
+        <div class="card">
+          <h3>CDN Script Integration Code</h3>
+          <p style="margin-top: 5px; margin-bottom: 15px;">Copy the code below and place it on any website where you want your blog stories to display. It will fetch automatically, render responsive cards, and support infinite scroll/pagination loading 15 items at a time.</p>
+          
+          <label>Embed HTML Snippet</label>
+          <div id="integration-snippet" class="snippet-box"></div>
+          <button class="btn" style="margin-top: 15px;" onclick="copySnippet()">Copy Snippet Code</button>
+        </div>
+      </div>
+
+      <!-- SITEMAP MODAL/PANEL -->
+      <div id="panel-sitemaps" class="tab-section">
+        <button class="btn btn-secondary" style="margin-bottom: 20px;" onclick="showPanel('panel-project-detail')">← Back to Blogs</button>
+        <div class="card">
+          <h3>Generate Sitemap Links</h3>
+          <p style="margin-top: 5px; margin-bottom: 15px;">Below are all public URLs generated for your blogs. Click the button to copy all links for your sitemap.xml config.</p>
+          
+          <div id="sitemap-list" style="margin-top: 15px; display: flex; flex-direction: column; gap: 10px;">
+            <!-- Sitemaps map here -->
+          </div>
+          <button class="btn" style="margin-top: 15px;" onclick="copyAllSitemaps()">Copy All URLs</button>
+        </div>
+      </div>
+
+      <!-- BLOG WRITER / EDITOR -->
+      <div id="panel-blog-editor" class="tab-section">
+        <button class="btn btn-secondary" style="margin-bottom: 20px;" onclick="cancelEditor()">← Cancel</button>
+        
+        <div class="card" style="display: flex; flex-direction: column; gap: 20px;">
+          <h2 id="editor-title-label">Craft New Story</h2>
+          <input type="hidden" id="edit-blog-id">
+
+          <div>
+            <label>Blog Title *</label>
+            <input type="text" id="blog-title" placeholder="Stunning headline...">
+          </div>
+
+          <div>
+            <label>Blog Subtitle / Excerpt</label>
+            <input type="text" id="blog-subtitle" placeholder="Short intro describing the story...">
+          </div>
+
+          <div>
+            <label>Cover Image (Upload directly to R2 / S3)</label>
+            <div style="display: flex; gap: 10px; margin-top: 5px;">
+              <input type="text" id="blog-cover-url" placeholder="R2 image URL matches here after uploading...">
+              <button class="btn" type="button" onclick="document.getElementById('cover-file-input').click()">📤 Upload Cover</button>
+              <input type="file" id="cover-file-input" style="display: none;" onchange="uploadImage(this, 'blog-cover-url')">
+            </div>
+          </div>
+
+          <div id="editor-paragraphs-container" style="display: flex; flex-direction: column; gap: 20px;">
+            <!-- Dynamic blocks here -->
+          </div>
+
+          <div>
+            <label>Add Content block</label>
+            <div style="display: flex; gap: 10px; margin-top: 10px; flex-wrap: wrap;">
+              <button class="btn btn-secondary" onclick="addParagraphBlock('p')">📝 Text Only</button>
+              <button class="btn btn-secondary" onclick="addParagraphBlock('img_row_2')">🖼️ 2 Images Row</button>
+              <button class="btn btn-secondary" onclick="addParagraphBlock('img_row_3')">🖼️ 3 Images Row</button>
+              <button class="btn btn-secondary" onclick="addParagraphBlock('img_text')">📷 Image + Text Block</button>
+            </div>
+          </div>
+
+          <button class="btn" style="align-self: flex-end; margin-top: 20px;" onclick="saveBlog()">🚀 Publish Story to Live Site</button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <script>
+    const baseUrl = window.location.origin + "/adminApiBlog";
+    let token = localStorage.getItem('blog_auth_token');
+    let selectedProjectId = '';
+    let projectsCache = [];
+    let blogsCache = [];
+
+    // On Load
+    if (token) {
+      showDashboard();
+    }
+
+    function showDashboard() {
+      document.getElementById('view-auth').classList.remove('tab-active');
+      document.getElementById('view-dashboard').classList.add('tab-active');
+      showPanel('panel-projects');
+      loadProjects();
+    }
+
+    function logout() {
+      localStorage.removeItem('blog_auth_token');
+      token = null;
+      document.getElementById('view-dashboard').classList.remove('tab-active');
+      document.getElementById('view-auth').classList.add('tab-active');
+      showEmailStep();
+    }
+
+    function showPanel(panelId) {
+      document.querySelectorAll('#view-dashboard > .tab-section').forEach(el => {
+        el.classList.remove('tab-active');
+      });
+      document.getElementById(panelId).classList.add('tab-active');
+    }
+
+    // --- AUTH FLOW ---
+    function showEmailStep() {
+      document.getElementById('email-step').style.display = 'block';
+      document.getElementById('otp-step').style.display = 'none';
+    }
+
+    async function sendOTP() {
+      const email = document.getElementById('auth-email').value;
+      if (!email) return alert("Email is required!");
+      try {
+        const res = await fetch(baseUrl + "/auth/send-otp", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          alert("OTP sent! Please check your email.");
+          document.getElementById('email-step').style.display = 'none';
+          document.getElementById('otp-step').style.display = 'block';
+        } else {
+          alert(data.error || "Failed to send OTP.");
+        }
+      } catch (e) {
+        alert("Error sending OTP: " + e.message);
+      }
+    }
+
+    async function verifyOTP() {
+      const email = document.getElementById('auth-email').value;
+      const otp = document.getElementById('auth-otp').value;
+      if (!otp) return alert("OTP is required!");
+      try {
+        const res = await fetch(baseUrl + "/auth/verify-otp", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email, otp })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          token = data.token;
+          localStorage.setItem('blog_auth_token', token);
+          showDashboard();
+        } else {
+          alert(data.error || "Incorrect OTP.");
+        }
+      } catch (e) {
+        alert("Verification failed: " + e.message);
+      }
+    }
+
+    // --- PROJECTS FLOW ---
+    async function loadProjects() {
+      try {
+        const res = await fetch(baseUrl + "/api/projects", {
+          headers: { "Authorization": "Bearer " + token }
+        });
+        if (res.status === 401) return logout();
+        const data = await res.json();
+        projectsCache = data.projects || [];
+        renderProjects();
+      } catch (e) {
+        alert("Failed to load projects: " + e.message);
+      }
+    }
+
+    function renderProjects() {
+      const listEl = document.getElementById('projects-list');
+      listEl.innerHTML = '';
+      projectsCache.forEach(p => {
+        const card = document.createElement('div');
+        card.className = 'project-card';
+        card.innerHTML = \`
+          <h4 style="font-size:18px;">\${p.name}</h4>
+          <p style="font-family:monospace; font-size:11px; color:var(--accent);">ID: \${p.id}</p>
+          <div style="display:flex; gap:10px; margin-top:auto;">
+            <button class="btn btn-secondary" onclick="viewProject('\${p.id}', '\${p.name}')" style="flex:1;">Manage Blogs</button>
+            <button class="btn btn-danger" onclick="deleteProject('\${p.id}')" style="padding:10px;">🗑️</button>
+          </div>
+        \`;
+        listEl.appendChild(card);
+      });
+    }
+
+    async function createProject() {
+      const name = document.getElementById('new-project-name').value;
+      if (!name) return alert("Name is required!");
+      try {
+        const res = await fetch(baseUrl + "/api/projects", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": "Bearer " + token
+          },
+          body: JSON.stringify({ name })
+        });
+        if (res.ok) {
+          document.getElementById('new-project-name').value = '';
+          loadProjects();
+        } else {
+          const data = await res.json();
+          alert(data.error);
+        }
+      } catch (e) {
+        alert("Error adding project");
+      }
+    }
+
+    async function deleteProject(id) {
+      if (!confirm("Are you sure you want to delete this project? This will delete all associated blogs permanently!")) return;
+      try {
+        const res = await fetch(baseUrl + "/api/projects/" + id, {
+          method: "DELETE",
+          headers: { "Authorization": "Bearer " + token }
+        });
+        if (res.ok) loadProjects();
+      } catch (e) {
+        alert("Failed to delete project");
+      }
+    }
+
+    function viewProject(id, name) {
+      selectedProjectId = id;
+      document.getElementById('detail-project-name').innerText = name;
+      document.getElementById('detail-project-id').innerText = "Project ID: " + id;
+      showPanel('panel-project-detail');
+      loadBlogs();
+    }
+
+    // --- BLOGS FLOW ---
+    async function loadBlogs() {
+      try {
+        const res = await fetch(baseUrl + "/api/blogs?projectId=" + selectedProjectId, {
+          headers: { "Authorization": "Bearer " + token }
+        });
+        const data = await res.json();
+        blogsCache = data.blogs || [];
+        renderBlogs();
+      } catch (e) {
+        alert("Failed to load blogs");
+      }
+    }
+
+    function renderBlogs() {
+      const listEl = document.getElementById('blogs-list');
+      listEl.innerHTML = '';
+      if (blogsCache.length === 0) {
+        listEl.innerHTML = '<p style="grid-column:1/-1; text-align:center;">No published stories found. Click "New Blog Story" to create one!</p>';
+        return;
+      }
+      blogsCache.forEach(b => {
+        const card = document.createElement('div');
+        card.className = 'blog-card';
+        const fallback = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="100%" fill="%231f2937"><rect width="100%" height="100%"/></svg>';
+        card.innerHTML = \`
+          <img class="blog-card-img" src="\${b.main_image_url || fallback}" onerror="this.src='\${fallback}'">
+          <div class="blog-card-body">
+            <span class="blog-card-title">\${b.title}</span>
+            <span style="font-size:12px; color:var(--muted)">\${b.subtitle || ''}</span>
+            <div style="display:flex; gap:10px; margin-top:auto; padding-top:10px;">
+              <button class="btn btn-secondary" onclick="editBlog('\${b.id}')" style="flex:1; padding:8px;">Edit</button>
+              <button class="btn btn-danger" onclick="deleteBlog('\${b.id}')" style="padding:8px;">🗑️</button>
+            </div>
+          </div>
+        \`;
+        listEl.appendChild(card);
+      });
+    }
+
+    async function deleteBlog(id) {
+      if (!confirm("Are you sure you want to delete this story?")) return;
+      try {
+        const res = await fetch(baseUrl + "/api/blogs/" + id, {
+          method: "DELETE",
+          headers: { "Authorization": "Bearer " + token }
+        });
+        if (res.ok) loadBlogs();
+      } catch (e) {
+        alert("Error deleting blog");
+      }
+    }
+
+    // --- INTEGRATIONS SNIPPET ---
+    function showIntegrations() {
+      const snippet = \`<!-- Container where the blog grid will load -->
+<div id="certifyied-blog-container" data-project-id="\${selectedProjectId}" data-limit="15"></div>
+
+<!-- Load dynamic list with infinite pagination from Cloudflare Worker CDN -->
+<script src="\${baseUrl}/api/embed"></script>\`;
+      document.getElementById('integration-snippet').innerText = snippet;
+      showPanel('panel-integrations');
+    }
+
+    function copySnippet() {
+      navigator.clipboard.writeText(document.getElementById('integration-snippet').innerText);
+      alert("Snippet code copied to clipboard!");
+    }
+
+    // --- SITEMAPS GENERATOR ---
+    function showSitemaps() {
+      const container = document.getElementById('sitemap-list');
+      container.innerHTML = '';
+      
+      if (blogsCache.length === 0) {
+        container.innerHTML = '<p>Publish some blogs to generate sitemap links.</p>';
+        return;
+      }
+      
+      blogsCache.forEach(b => {
+        const blogUrl = \`\${baseUrl}/blog/\${b.slug}?project=\${selectedProjectId}\`;
+        const div = document.createElement('div');
+        div.className = 'sitemap-item';
+        div.innerHTML = \`
+          <span style="font-family:monospace; color:var(--accent);">\${blogUrl}</span>
+          <button class="btn btn-secondary" onclick="navigator.clipboard.writeText('\${blogUrl}'); alert('Copied link!');" style="padding:6px 12px; font-size:12px;">Copy</button>
+        \`;
+        container.appendChild(div);
+      });
+      showPanel('panel-sitemaps');
+    }
+
+    function copyAllSitemaps() {
+      const links = blogsCache.map(b => \`\${baseUrl}/blog/\${b.slug}?project=\${selectedProjectId}\`).join('\\n');
+      navigator.clipboard.writeText(links);
+      alert("All blog links copied to clipboard!");
+    }
+
+    // --- BLOG WRITER / EDITOR LOGIC ---
+    function cancelEditor() {
+      if (confirm("Any unsaved changes will be lost. Cancel editing?")) {
+        showPanel('panel-project-detail');
+      }
+    }
+
+    function newBlog() {
+      document.getElementById('edit-blog-id').value = '';
+      document.getElementById('blog-title').value = '';
+      document.getElementById('blog-subtitle').value = '';
+      document.getElementById('blog-cover-url').value = '';
+      document.getElementById('editor-paragraphs-container').innerHTML = '';
+      document.getElementById('editor-title-label').innerText = 'Craft New Story';
+      showPanel('panel-blog-editor');
+      
+      // Add a starting text block automatically
+      addParagraphBlock('p');
+    }
+
+    function editBlog(id) {
+      const blog = blogsCache.find(b => b.id === id);
+      if (!blog) return;
+
+      document.getElementById('edit-blog-id').value = blog.id;
+      document.getElementById('blog-title').value = blog.title || '';
+      document.getElementById('blog-subtitle').value = blog.subtitle || '';
+      document.getElementById('blog-cover-url').value = blog.main_image_url || '';
+      document.getElementById('editor-title-label').innerText = 'Editing Story: ' + blog.title;
+
+      const container = document.getElementById('editor-paragraphs-container');
+      container.innerHTML = '';
+
+      if (blog.paragraphs && Array.isArray(blog.paragraphs)) {
+        blog.paragraphs.forEach(p => {
+          addParagraphBlock(p.type, p.text, p.imageUrl || p.images, p.subheading);
+        });
+      }
+      showPanel('panel-blog-editor');
+    }
+
+    function addParagraphBlock(type, optText = '', optImg = '', optSubheading = '') {
+      const container = document.getElementById('editor-paragraphs-container');
+      const pDiv = document.createElement('div');
+      pDiv.className = 'editor-block';
+      pDiv.dataset.type = type;
+
+      const blockId = 'editor-body-' + Math.random().toString(36).substring(2, 9);
+
+      let inner = \`<button class="btn btn-secondary btn-danger editor-block-trash" onclick="this.parentElement.remove();">Remove</button>\`;
+      
+      const safeText = String(optText || '');
+      const safeSubheading = String(optSubheading || '').replace(/"/g, '&quot;');
+
+      let badgeColor = type === 'p' ? '#3b82f6' : (type === 'img_text' ? '#10b981' : '#8b5cf6');
+      let badgeText = type === 'p' ? 'Text Block' : (type === 'img_text' ? 'Image + Text Block' : (type === 'img_row_2' ? '2 Images Row' : '3 Images Row'));
+
+      inner += \`<div style="display:inline-block; background:\${badgeColor}20; color:\${badgeColor}; font-size:11px; font-weight:800; padding:5px 10px; border-radius:6px; text-transform:uppercase; margin-bottom:15px;">\${badgeText}</div>\`;
+
+      const subInput = \`<div style="margin-top:10px;"><label>Section Subheading (Optional)</label><input type="text" class="para-subheading" value="\${safeSubheading}" placeholder="Section heading..."></div>\`;
+
+      if (type === 'p') {
+        inner += \`\${subInput}
+          <div style="margin-top:15px;">
+            <label>Paragraph Text</label>
+            <div class="quill-editor-wrapper">
+              <div id="\${blockId}" style="min-height:150px; font-size:14px;">\${safeText}</div>
+            </div>
+          </div>\`;
+      } else if (type === 'img_row_2' || type === 'img_row_3') {
+        const count = type === 'img_row_2' ? 2 : 3;
+        const images = Array.isArray(optImg) ? optImg : [optImg, '', ''];
+        let imagesHtml = '';
+        for (let i = 0; i < count; i++) {
+          const val = String(images[i] || '').replace(/"/g, '&quot;');
+          const inputId = blockId + '-img-' + i;
+          imagesHtml += \`
+            <div style="flex:1; display:flex; flex-direction:column; gap:5px;">
+              <label>Image \${i + 1}</label>
+              <div style="display:flex; gap:10px;">
+                <input type="text" class="para-img-multi" id="\${inputId}" value="\${val}" placeholder="R2 image URL...">
+                <button class="btn btn-secondary" type="button" onclick="document.getElementById('\${inputId}-file').click()">📤</button>
+                <input type="file" id="\${inputId}-file" style="display:none;" onchange="uploadImage(this, '\${inputId}')">
+              </div>
+            </div>
+          \`;
+        }
+        inner += \`<div class="flex-group" style="margin-bottom:10px;">\${imagesHtml}</div>\`;
+        inner += \`\${subInput}
+          <div style="margin-top:15px;">
+            <label>Optional text content below image row</label>
+            <div class="quill-editor-wrapper">
+              <div id="\${blockId}" style="min-height:100px; font-size:14px;">\${safeText}</div>
+            </div>
+          </div>\`;
+      } else {
+        // img_text
+        const imgVal = String(Array.isArray(optImg) ? optImg[0] : optImg || '').replace(/"/g, '&quot;');
+        inner += \`
+          <div style="margin-bottom:15px;">
+            <label>Image Attachment</label>
+            <div style="display:flex; gap:10px; margin-top:5px;">
+              <input type="text" class="para-img" id="\${blockId}-img" value="\${imgVal}" placeholder="R2 image URL...">
+              <button class="btn btn-secondary" type="button" onclick="document.getElementById('\${blockId}-img-file').click()">📤 Upload Image</button>
+              <input type="file" id="\${blockId}-img-file" style="display:none;" onchange="uploadImage(this, '\${blockId}-img')">
+            </div>
+          </div>
+          \u0024{subInput}
+          <div style="margin-top:15px;">
+            <label>Content Text</label>
+            <div class="quill-editor-wrapper">
+              <div id="\${blockId}" style="min-height:120px; font-size:14px;">\${safeText}</div>
+            </div>
+          </div>\`;
+      }
+
+      pDiv.innerHTML = inner;
+      container.appendChild(pDiv);
+
+      // Bind Quill
+      const quill = new Quill('#' + blockId, {
+        theme: 'snow',
+        modules: {
+          toolbar: [
+            ['bold', 'italic', 'underline'],
+            ['link'],
+            [{ 'list': 'bullet' }]
+          ]
+        }
+      });
+      pDiv.quillInstance = quill;
+    }
+
+    // --- UPLOAD HANDLER FOR CLOUDFLARE R2 ---
+    async function uploadImage(fileInput, targetInputId) {
+      const file = fileInput.files[0];
+      if (!file) return;
+
+      const btn = fileInput.previousElementSibling;
+      const originalText = btn.innerText;
+      btn.innerText = "⏳ Uploading...";
+      btn.disabled = true;
+
+      try {
+        const res = await fetch(baseUrl + "/api/upload", {
+          method: "POST",
+          headers: {
+            "Content-Type": file.type || "image/jpeg",
+            "Authorization": "Bearer " + token
+          },
+          body: file // Sends raw binary to Cloudflare Worker
+        });
+
+        if (!res.ok) throw new Error("Upload request failed.");
+        const data = await res.json();
+        document.getElementById(targetInputId).value = data.url;
+        alert("Image uploaded to R2 successfully!");
+      } catch (err) {
+        alert("Upload failed: " + err.message);
+      } finally {
+        btn.innerText = originalText;
+        btn.disabled = false;
+        fileInput.value = "";
+      }
+    }
+
+    // --- SAVE THE BLOG TO SUPABASE ---
+    async function saveBlog() {
+      const id = document.getElementById('edit-blog-id').value;
+      const title = document.getElementById('blog-title').value;
+      const subtitle = document.getElementById('blog-subtitle').value;
+      const main_image_url = document.getElementById('blog-cover-url').value;
+
+      if (!title) return alert("Blog Title is required!");
+
+      const paragraphs = [];
+      document.querySelectorAll('.editor-block').forEach(el => {
+        const type = el.dataset.type;
+        const subheading = el.querySelector('.para-subheading')?.value || '';
+        const text = el.quillInstance ? el.quillInstance.root.innerHTML : '';
+
+        const obj = { type, text };
+        if (subheading) obj.subheading = subheading;
+
+        if (type === 'img_row_2' || type === 'img_row_3') {
+          const imgInputs = el.querySelectorAll('.para-img-multi');
+          const images = [];
+          imgInputs.forEach(inp => images.push(inp.value));
+          obj.images = images;
+        } else if (type === 'img_text') {
+          obj.imageUrl = el.querySelector('.para-img')?.value || '';
+        }
+        paragraphs.push(obj);
+      });
+
+      const payload = {
+        project_id: selectedProjectId,
+        title,
+        subtitle,
+        main_image_url,
+        paragraphs
+      };
+
+      if (id) payload.id = id;
+
+      try {
+        const res = await fetch(baseUrl + "/api/blogs", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": "Bearer " + token
+          },
+          body: JSON.stringify(payload)
+        });
+
+        if (res.ok) {
+          alert("Story published successfully!");
+          showPanel('panel-project-detail');
+          loadBlogs();
+        } else {
+          const data = await res.json();
+          alert("Failed to save: " + data.error);
+        }
+      } catch (err) {
+        alert("Network error: " + err.message);
+      }
+    }
+  </script>
+</body>
+</html>
+      `;
+      return new Response(dashboardHTML, {
+        headers: { 'Content-Type': 'text/html' }
+      });
+    }
+
+    return new Response(JSON.stringify({ error: "Endpoint not found" }), {
+      status: 404,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    });
+  },
+};
+
+// Transporter setup and helper function for SMTP email delivery
+async function sendOTPEmail(env, email, otp) {
+  const transporter = nodemailer.createTransport({
+    host: env.MAIL_HOST,
+    port: parseInt(env.MAIL_PORT) || 587,
+    secure: parseInt(env.MAIL_PORT) === 465,
+    auth: {
+      user: env.MAIL_USERNAME,
+      pass: env.MAIL_PASSWORD,
+    },
+  });
+
+  await transporter.sendMail({
+    from: `"Blog Admin Portal" <${env.MAIL_USERNAME}>`,
+    to: email,
+    subject: "Security Login OTP",
+    text: `Your verification code is: ${otp}`,
+    html: `<div style="font-family: sans-serif; background-color: #0b0f19; color: #f9fafb; padding: 40px; border-radius: 12px; max-width: 500px; margin: auto; border: 1px solid #1f2937;">
+      <h2 style="color: #6366f1; font-weight: 700; margin-bottom: 20px;">Developer Portal Access</h2>
+      <p style="color: #9ca3af; font-size: 14px; line-height: 1.6;">A request to log in to the Blog Admin Panel was made. Please use the following one-time password (OTP) to authenticate:</p>
+      <div style="font-size: 32px; font-weight: 800; color: #10b981; letter-spacing: 4px; text-align: center; margin: 30px 0; background: #161e2e; padding: 15px; border-radius: 8px; border: 1px solid #1f2937;">
+        ${otp}
+      </div>
+      <p style="color: #9ca3af; font-size: 12px;">This security code is strictly valid for 10 minutes. If you did not request this, you can safely ignore this email.</p>
+    </div>`,
+  });
+}

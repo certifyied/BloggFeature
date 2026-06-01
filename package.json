@@ -1,0 +1,22 @@
+{
+  "name": "blog-feature-worker",
+  "version": "1.0.0",
+  "description": "Cloudflare Worker backend for Blog Feature integrating with Supabase",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.43.4",
+    "audit": "^0.0.6",
+    "fix": "^0.0.6",
+    "jose": "^5.4.0",
+    "nodemailer": "^6.9.13",
+    "npm": "^11.16.0"
+  },
+  "devDependencies": {
+    "wrangler": "^3.57.1"
+  }
+}
