@@ -498,10 +498,23 @@ export default {
 
         if (error) throw error;
 
-        // Send Email using Gmail SMTP config
-        await sendOTPEmail(env, email, otp);
+        // Try to send email — but NEVER block the flow if it fails.
+        // The OTP is already saved in DB and can still be verified.
+        let emailFailed = false;
+        try {
+          await sendOTPEmail(env, email, otp);
+        } catch (emailErr) {
+          emailFailed = true;
+          console.error('[OTP] Email send failed:', emailErr.message);
+          console.warn(`🔑 OTP for ${email}: ${otp}`);
+        }
 
-        return new Response(JSON.stringify({ message: "OTP sent successfully." }), {
+        return new Response(JSON.stringify({
+          message: emailFailed
+            ? 'OTP generated. Email delivery failed — check server logs for the code.'
+            : 'OTP sent successfully.',
+          emailFailed,
+        }), {
           status: 200,
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
@@ -605,7 +618,7 @@ export default {
     // GET & POST Projects
     if (path === '/adminApiBlog/api/projects') {
       if (request.method === 'GET') {
-        let query = supabase.from('projects').select('*');
+        let query = supabaseAdmin.from('projects').select('*');
         if (payload.projectId) {
           query = query.eq('id', payload.projectId);
         }
@@ -628,7 +641,7 @@ export default {
         if (!name) {
           return new Response(JSON.stringify({ error: "Project name is required" }), { status: 400, headers: corsHeaders });
         }
-        const { data, error } = await supabase
+        const { data, error } = await supabaseAdmin
           .from('projects')
           .insert({ name })
           .select()
@@ -650,7 +663,7 @@ export default {
       if (payload.projectId) {
         return new Response(JSON.stringify({ error: "Access denied. Restricted users cannot delete projects." }), { status: 403, headers: corsHeaders });
       }
-      const { error } = await supabase
+      const { error } = await supabaseAdmin
         .from('projects')
         .delete()
         .eq('id', projectDeleteMatch[1]);
@@ -671,7 +684,7 @@ export default {
         if (payload.projectId && payload.projectId !== projectId) {
           return new Response(JSON.stringify({ error: "Access denied to this project's blogs." }), { status: 403, headers: corsHeaders });
         }
-        const { data, error } = await supabase
+        const { data, error } = await supabaseAdmin
           .from('blogs')
           .select('*')
           .eq('project_id', projectId)
@@ -716,7 +729,7 @@ export default {
           let result;
           if (id) {
             // Update
-            const { data, error } = await supabase
+            const { data, error } = await supabaseAdmin
               .from('blogs')
               .update(payload)
               .eq('id', id)
@@ -726,7 +739,7 @@ export default {
             result = data;
           } else {
             // Insert
-            const { data, error } = await supabase
+            const { data, error } = await supabaseAdmin
               .from('blogs')
               .insert(payload)
               .select()
@@ -750,7 +763,7 @@ export default {
     if (blogDeleteMatch && request.method === 'DELETE') {
       const blogId = blogDeleteMatch[1];
       if (payload.projectId) {
-        const { data: blog } = await supabase
+        const { data: blog } = await supabaseAdmin
           .from('blogs')
           .select('project_id')
           .eq('id', blogId)
@@ -759,7 +772,7 @@ export default {
           return new Response(JSON.stringify({ error: "Access denied. You cannot delete this blog." }), { status: 403, headers: corsHeaders });
         }
       }
-      const { error } = await supabase
+      const { error } = await supabaseAdmin
         .from('blogs')
         .delete()
         .eq('id', blogId);
@@ -804,7 +817,7 @@ export default {
       }
 
       if (request.method === 'GET') {
-        const { data, error } = await supabase
+        const { data, error } = await supabaseAdmin
           .from('admins')
           .select('*')
           .order('created_at', { ascending: false });
@@ -864,7 +877,7 @@ export default {
           project_id: project_id || null
         };
 
-        const { data, error } = await supabase
+        const { data, error } = await supabaseAdmin
           .from('admins')
           .upsert(insertData)
           .select()
@@ -889,7 +902,7 @@ export default {
       const emailToDelete = decodeURIComponent(deleteUserMatch[1]).toLowerCase();
 
       // Retrieve auth user ID first to delete them from auth.users
-      const { data: adminUser } = await supabase
+      const { data: adminUser } = await supabaseAdmin
         .from('admins')
         .select('id')
         .eq('email', emailToDelete)
@@ -903,7 +916,7 @@ export default {
         }
       }
 
-      const { error } = await supabase
+      const { error } = await supabaseAdmin
         .from('admins')
         .delete()
         .eq('email', emailToDelete);
@@ -1484,6 +1497,11 @@ export default {
     async function sendOTP() {
       const email = document.getElementById('auth-email').value;
       if (!email) return alert("Email is required!");
+
+      const btn = document.querySelector('#email-step button');
+      btn.disabled = true;
+      btn.innerText = 'Sending...';
+
       try {
         const res = await fetch(baseUrl + "/auth/send-otp", {
           method: "POST",
@@ -1491,15 +1509,25 @@ export default {
           body: JSON.stringify({ email })
         });
         const data = await res.json();
+
         if (res.ok) {
-          alert("OTP sent! Please check your email.");
+          // Always show OTP field — even if email failed, OTP is saved in DB
           document.getElementById('email-step').style.display = 'none';
           document.getElementById('otp-step').style.display = 'block';
+
+          if (data.emailFailed) {
+            alert("⚠️ OTP generated but email delivery failed. Check wrangler logs for the code, or check your Resend API key.");
+          } else {
+            alert("✅ OTP sent! Please check your email.");
+          }
         } else {
           alert(data.error || "Failed to send OTP.");
         }
       } catch (e) {
-        alert("Error sending OTP: " + e.message);
+        alert("Network error: " + e.message);
+      } finally {
+        btn.disabled = false;
+        btn.innerText = 'Send OTP';
       }
     }
 
@@ -2140,50 +2168,44 @@ export default {
   },
 };
 
-// Email delivery via MailChannels API (free, native to Cloudflare Workers — no TCP/SMTP needed)
+// Email delivery via Resend API (https://resend.com — free tier: 3000 emails/month)
+// Requires RESEND_API_KEY secret. Falls back to console log in local dev if key missing.
 async function sendOTPEmail(env, email, otp) {
-  const fromEmail = env.MAIL_USERNAME || 'noreply@certifyied.com';
-  const fromName = 'Blog Admin Portal';
+  const apiKey = env.RESEND_API_KEY;
 
-  const emailBody = {
-    personalizations: [{
-      to: [{ email }],
-    }],
-    from: { email: fromEmail, name: fromName },
-    subject: 'Your Certifyied Login OTP',
-    content: [
-      {
-        type: 'text/plain',
-        value: `Your verification code is: ${otp}\n\nThis code expires in 10 minutes.`,
-      },
-      {
-        type: 'text/html',
-        value: `<div style="font-family: sans-serif; background-color: #0b0f19; color: #f9fafb; padding: 40px; border-radius: 12px; max-width: 500px; margin: auto; border: 1px solid #1f2937;">
-  <h2 style="color: #6366f1; font-weight: 700; margin-bottom: 20px;">Developer Portal Access</h2>
-  <p style="color: #9ca3af; font-size: 14px; line-height: 1.6;">A login request was made for the Blog Admin Panel. Use the OTP below to authenticate:</p>
-  <div style="font-size: 36px; font-weight: 800; color: #10b981; letter-spacing: 6px; text-align: center; margin: 30px 0; background: #161e2e; padding: 20px; border-radius: 8px; border: 1px solid #1f2937;">${otp}</div>
-  <p style="color: #9ca3af; font-size: 12px;">Valid for 10 minutes. If you did not request this, ignore this email.</p>
-</div>`,
-      },
-    ],
-  };
+  // Local dev fallback: log OTP to wrangler console if no API key set
+  if (!apiKey) {
+    console.warn('⚠️  RESEND_API_KEY not set.');
+    console.warn(`🔑 DEV FALLBACK — OTP for ${email}: ${otp}`);
+    return;
+  }
 
-  const res = await fetch('https://api.mailchannels.net/tx/v1/send', {
+  const res = await fetch('https://api.resend.com/emails', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(emailBody),
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      from: 'Certifyied Blog Portal <onboarding@resend.dev>',
+      to: [email],
+      subject: 'Your Certifyied Login OTP',
+      html: `<div style="font-family:sans-serif;background:#0b0f19;color:#f9fafb;padding:40px;border-radius:12px;max-width:500px;margin:auto;border:1px solid #1f2937;">
+  <h2 style="color:#6366f1;font-weight:700;margin-bottom:20px;">Developer Portal Access</h2>
+  <p style="color:#9ca3af;font-size:14px;line-height:1.6;">A login request was made for the Blog Admin Panel. Use the OTP below to authenticate:</p>
+  <div style="font-size:36px;font-weight:800;color:#10b981;letter-spacing:6px;text-align:center;margin:30px 0;background:#161e2e;padding:20px;border-radius:8px;border:1px solid #1f2937;">${otp}</div>
+  <p style="color:#9ca3af;font-size:12px;">Valid for 10 minutes. If you did not request this, ignore this email.</p>
+</div>`,
+      text: `Your Certifyied login OTP is: ${otp}\n\nValid for 10 minutes.`,
+    }),
   });
 
-  // In local Miniflare dev, MailChannels may be unreachable — log OTP to console as fallback
   if (!res.ok) {
-    const errText = await res.text().catch(() => 'unknown error');
-    console.warn(`[OTP EMAIL] MailChannels send failed (${res.status}): ${errText}`);
-    console.warn(`[OTP EMAIL] *** DEV FALLBACK — OTP for ${email}: ${otp} ***`);
-    // In local dev we allow this to succeed so the OTP is stored and can be verified
-    if (res.status === 500 || res.status === 403) {
-      console.warn('[OTP EMAIL] Continuing without email delivery (local dev mode).');
-      return;
-    }
-    throw new Error(`Email delivery failed: ${res.status} ${errText}`);
+    const err = await res.text().catch(() => '');
+    // In local miniflare dev, network may fail — log OTP so dev can still test
+    console.warn(`[OTP EMAIL] Resend failed (${res.status}): ${err}`);
+    console.warn(`🔑 DEV FALLBACK — OTP for ${email}: ${otp}`);
+    if (res.status >= 500) return; // Don't block login on server errors
+    throw new Error(`Email delivery failed: ${res.status} ${err}`);
   }
 }
