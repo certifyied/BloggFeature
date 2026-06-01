@@ -44,6 +44,9 @@ export default {
     const imageMatch = path.match(/^\/adminApiBlog\/cdn\/image\/(.+)$/);
     if (imageMatch && request.method === 'GET') {
       try {
+        if (!env.BUCKET) {
+          return new Response('R2 storage is disabled', { status: 503, headers: corsHeaders });
+        }
         const key = decodeURIComponent(imageMatch[1]);
         const object = await env.BUCKET.get(key);
         if (!object) {
@@ -695,6 +698,12 @@ export default {
     // POST Image Upload to Cloudflare R2
     if (path === '/adminApiBlog/api/upload' && request.method === 'POST') {
       try {
+        if (!env.BUCKET) {
+          return new Response(JSON.stringify({ error: "Image upload is temporarily disabled because Cloudflare R2 is not configured." }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
         const fileKey = `${crypto.randomUUID()}.jpg`;
         const contentType = request.headers.get('content-type') || 'image/jpeg';
         const bodyArrayBuffer = await request.arrayBuffer();
