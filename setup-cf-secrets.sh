@@ -9,10 +9,8 @@ echo "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt3c
 echo "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt3cmRwZnpyaHNvc3NxZ21ndGduIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3OTk5NTIwNSwiZXhwIjoyMDk1NTcxMjA1fQ.dKVYpAPE-nYyp55MDPPCuLCDf8rW9ofwKwfXqPZuM2k" | npx wrangler secret put SUPABASE_SERVICE_ROLE_KEY
 echo "h7v0i8os3mUEtJ0UY4ruMq+ti2iNApp4IslKh8mLEV6VNlMJzdO6JctWSa8fxYuuwcQZJHjo+KabjHOv6VukRA==" | npx wrangler secret put JWT_SECRET
 echo "kabhiram67@gmail.com" | npx wrangler secret put ADMIN_EMAIL
-echo "smtp.gmail.com" | npx wrangler secret put MAIL_HOST
-echo "587" | npx wrangler secret put MAIL_PORT
-echo "abhiram.63abhi@gmail.com" | npx wrangler secret put MAIL_USERNAME
-echo "vvpxkxusgsuxiwpx" | npx wrangler secret put MAIL_PASSWORD
+# IMPORTANT: Replace YOUR_RESEND_API_KEY_HERE with your actual key from https://resend.com/api-keys
+# echo "YOUR_RESEND_API_KEY_HERE" | npx wrangler secret put RESEND_API_KEY
 
 echo ""
 echo "✅ All secrets set! Now deploying..."

@@ -22,6 +22,42 @@ async function verifyJWT(env, token) {
   }
 }
 
+// System Audit Logs & Trail logging helper with automatic cleanup
+async function logAction(supabaseAdmin, email, action, details = {}, ip = '') {
+  try {
+    // 1. Insert log record
+    await supabaseAdmin.from('audit_logs').insert({
+      email: email ? email.toLowerCase() : 'anonymous',
+      action,
+      details,
+      ip_address: ip
+    });
+
+    // 2. Automate cleaning: if rows > 10,000, remove the oldest 5,000
+    const { count, error: countErr } = await supabaseAdmin
+      .from('audit_logs')
+      .select('*', { count: 'exact', head: true });
+
+    if (!countErr && count > 10000) {
+      const { data: logs, error: selectErr } = await supabaseAdmin
+        .from('audit_logs')
+        .select('created_at')
+        .order('created_at', { ascending: true })
+        .range(4999, 4999)
+        .maybeSingle();
+
+      if (!selectErr && logs && logs.created_at) {
+        await supabaseAdmin
+          .from('audit_logs')
+          .delete()
+          .lte('created_at', logs.created_at);
+      }
+    }
+  } catch (err) {
+    console.error("Error logging action:", err);
+  }
+}
+
 export default {
   async fetch(request, env, ctx) {
     const corsHeaders = {
@@ -82,171 +118,344 @@ export default {
     if (path === '/adminApiBlog/api/embed' && request.method === 'GET') {
       const embedScript = `
 (function() {
-  const container = document.getElementById('certifyied-blog-container');
-  if (!container) return;
-
-  const projectId = container.dataset.projectId;
-  const initialLimit = parseInt(container.dataset.limit) || 5;
   const workerOrigin = "${url.origin}";
-  
-  if (!projectId) {
-    container.innerHTML = '<p style="color:red;">Error: data-project-id attribute is missing!</p>';
-    return;
-  }
 
-  let page = 1;
-  const limit = 15;
-  let loading = false;
-  let hasMore = true;
-
-  // Insert base CSS
+  // Insert Base CSS
   const style = document.createElement('style');
-  style.innerHTML = \`
-    .cf-blog-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-      gap: 24px;
-      margin-bottom: 24px;
-    }
-    .cf-blog-card {
-      background: white;
-      border: 1px solid #e2e8f0;
-      border-radius: 12px;
-      overflow: hidden;
-      display: flex;
-      flex-direction: column;
-      box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);
-      transition: transform 0.2s, box-shadow 0.2s;
-    }
-    .cf-blog-card:hover {
-      transform: translateY(-4px);
-      box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1);
-    }
-    .cf-blog-image {
-      height: 180px;
-      background: #f1f5f9;
-      position: relative;
-    }
-    .cf-blog-image img {
-      width: 100%;
-      height: 100%;
-      object-fit: cover;
-    }
-    .cf-blog-content {
-      padding: 20px;
-      display: flex;
-      flex-direction: column;
-      flex-grow: 1;
-    }
-    .cf-blog-title {
-      font-size: 18px;
-      font-weight: 700;
-      color: #0f172a;
-      margin: 8px 0;
-      line-height: 1.4;
-    }
-    .cf-blog-subtitle {
-      font-size: 14px;
-      color: #64748b;
-      margin-bottom: 16px;
-      flex-grow: 1;
-    }
-    .cf-blog-btn {
-      align-self: flex-start;
-      background: #0f172a;
-      color: white;
-      padding: 8px 16px;
-      border-radius: 6px;
-      text-decoration: none;
-      font-size: 13px;
-      font-weight: 600;
-      transition: background 0.2s;
-    }
-    .cf-blog-btn:hover {
-      background: #1e293b;
-    }
-    .cf-blog-loader {
-      display: none;
-      text-align: center;
-      padding: 20px;
-      font-size: 14px;
-      color: #64748b;
-    }
-  \`;
+  style.innerHTML = 
+    '.cf-blog-grid {' +
+    '  display: grid;' +
+    '  grid-template-columns: 1fr;' +
+    '  gap: 24px;' +
+    '  margin-bottom: 24px;' +
+    '  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;' +
+    '}' +
+    '@media (min-width: 640px) {' +
+    '  .cf-blog-grid {' +
+    '    grid-template-columns: repeat(2, minmax(0, 1fr));' +
+    '  }' +
+    '}' +
+    '@media (min-width: 1024px) {' +
+    '  .cf-blog-grid {' +
+    '    grid-template-columns: repeat(3, minmax(0, 1fr));' +
+    '  }' +
+    '}' +
+    '.cf-blog-card {' +
+    '  background: white;' +
+    '  border: 1px solid #e2e8f0;' +
+    '  border-radius: 12px;' +
+    '  overflow: hidden;' +
+    '  display: flex;' +
+    '  flex-direction: column;' +
+    '  box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);' +
+    '  transition: transform 0.2s, box-shadow 0.2s;' +
+    '  cursor: pointer;' +
+    '}' +
+    '.cf-blog-card:hover {' +
+    '  transform: translateY(-4px);' +
+    '  box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1);' +
+    '}' +
+    '.cf-blog-image {' +
+    '  aspect-ratio: 16/9;' +
+    '  width: 100%;' +
+    '  background: #f1f5f9;' +
+    '  overflow: hidden;' +
+    '}' +
+    '.cf-blog-image img {' +
+    '  width: 100%;' +
+    '  height: 100%;' +
+    '  object-fit: cover;' +
+    '}' +
+    '.cf-blog-content {' +
+    '  padding: 20px;' +
+    '  display: flex;' +
+    '  flex-direction: column;' +
+    '  flex-grow: 1;' +
+    '}' +
+    '.cf-blog-date {' +
+    '  font-size: 12px;' +
+    '  color: #94a3b8;' +
+    '  text-transform: uppercase;' +
+    '  letter-spacing: 0.05em;' +
+    '  margin-bottom: 6px;' +
+    '}' +
+    '.cf-blog-title {' +
+    '  font-size: 18px;' +
+    '  font-weight: 700;' +
+    '  color: #0f172a;' +
+    '  margin: 8px 0;' +
+    '  line-height: 1.4;' +
+    '  display: -webkit-box;' +
+    '  -webkit-line-clamp: 2;' +
+    '  -webkit-box-orient: vertical;' +
+    '  overflow: hidden;' +
+    '}' +
+    '.cf-blog-subtitle {' +
+    '  font-size: 14px;' +
+    '  color: #64748b;' +
+    '  margin-bottom: 16px;' +
+    '  flex-grow: 1;' +
+    '  line-height: 1.5;' +
+    '  display: -webkit-box;' +
+    '  -webkit-line-clamp: 3;' +
+    '  -webkit-box-orient: vertical;' +
+    '  overflow: hidden;' +
+    '}' +
+    '.cf-blog-read-more {' +
+    '  font-size: 13px;' +
+    '  font-weight: 600;' +
+    '  color: #2563eb;' +
+    '  display: inline-flex;' +
+    '  align-items: center;' +
+    '  gap: 4px;' +
+    '  margin-top: auto;' +
+    '}' +
+    '.cf-blog-card:hover .cf-blog-read-more {' +
+    '  color: #1d4ed8;' +
+    '}' +
+    '.cf-blog-read-more svg {' +
+    '  transition: transform 0.2s;' +
+    '}' +
+    '.cf-blog-card:hover .cf-blog-read-more svg {' +
+    '  transform: translateX(4px);' +
+    '}' +
+    '.cf-blog-loader {' +
+    '  text-align: center;' +
+    '  padding: 40px;' +
+    '  font-size: 14px;' +
+    '  color: #64748b;' +
+    '}' +
+    '.cf-blog-error {' +
+    '  color: #ef4444;' +
+    '  text-align: center;' +
+    '  padding: 20px;' +
+    '  font-size: 14px;' +
+    '}' +
+    '.cf-post-container {' +
+    '  max-width: 800px;' +
+    '  margin: 0 auto;' +
+    '  padding: 24px 16px;' +
+    '  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;' +
+    '  color: #334155;' +
+    '  line-height: 1.7;' +
+    '}' +
+    '.cf-post-header {' +
+    '  margin-bottom: 32px;' +
+    '}' +
+    '.cf-post-title {' +
+    '  font-size: 32px;' +
+    '  font-weight: 800;' +
+    '  color: #0f172a;' +
+    '  line-height: 1.25;' +
+    '  margin-bottom: 16px;' +
+    '}' +
+    '@media (min-width: 768px) {' +
+    '  .cf-post-title {' +
+    '    font-size: 42px;' +
+    '  }' +
+    '}' +
+    '.cf-post-meta {' +
+    '  font-size: 14px;' +
+    '  color: #64748b;' +
+    '  margin-bottom: 8px;' +
+    '}' +
+    '.cf-post-subtitle {' +
+    '  font-size: 18px;' +
+    '  color: #475569;' +
+    '  line-height: 1.5;' +
+    '  margin-bottom: 24px;' +
+    '}' +
+    '.cf-post-image {' +
+    '  width: 100%;' +
+    '  aspect-ratio: 16/9;' +
+    '  border-radius: 12px;' +
+    '  overflow: hidden;' +
+    '  margin-bottom: 32px;' +
+    '  box-shadow: 0 4px 10px rgba(0,0,0,0.05);' +
+    '}' +
+    '.cf-post-image img {' +
+    '  width: 100%;' +
+    '  height: 100%;' +
+    '  object-fit: cover;' +
+    '}' +
+    '.cf-post-body p {' +
+    '  font-size: 16px;' +
+    '  margin-bottom: 20px;' +
+    '  color: #334155;' +
+    '}' +
+    '.cf-post-body h2, .cf-post-body h3, .cf-post-body h4 {' +
+    '  color: #0f172a;' +
+    '  font-weight: 700;' +
+    '  margin-top: 36px;' +
+    '  margin-bottom: 12px;' +
+    '  line-height: 1.3;' +
+    '}' +
+    '.cf-post-body h2 { font-size: 26px; }' +
+    '.cf-post-body h3 { font-size: 22px; }' +
+    '.cf-post-body h4 { font-size: 18px; }' +
+    '.cf-post-body ul, .cf-post-body ol {' +
+    '  margin-bottom: 20px;' +
+    '  padding-left: 24px;' +
+    '}' +
+    '.cf-post-body li {' +
+    '  margin-bottom: 8px;' +
+    '}';
   document.head.appendChild(style);
 
-  // Layout Setup
-  const gridEl = document.createElement('div');
-  gridEl.className = 'cf-blog-grid';
-  container.appendChild(gridEl);
+  const listContainer = document.getElementById('certifyied-blog-container');
+  const postContainer = document.getElementById('certifyied-blog-post');
+  const fallbackImg = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="100%" fill="%23e2e8f0"><rect width="100%" height="100%"/></svg>';
 
-  const loaderEl = document.createElement('div');
-  loaderEl.className = 'cf-blog-loader';
-  loaderEl.innerText = 'Loading stories...';
-  container.appendChild(loaderEl);
+  // --- RENDERING LIST MODE ---
+  if (listContainer) {
+    const projectId = listContainer.dataset.projectId;
+    const initialLimit = parseInt(listContainer.dataset.limit) || 9;
+    const redirectUrl = listContainer.dataset.redirectUrl || '/blog';
+    
+    if (!projectId) {
+      listContainer.innerHTML = '<p class="cf-blog-error">Error: data-project-id attribute is missing!</p>';
+      return;
+    }
 
-  // Fetch blogs helper
-  async function fetchBlogs(isInitial = false) {
-    if (loading || (!isInitial && !hasMore)) return;
-    loading = true;
-    loaderEl.style.display = 'block';
+    const gridEl = document.createElement('div');
+    gridEl.className = 'cf-blog-grid';
+    listContainer.appendChild(gridEl);
 
-    try {
-      const currentLimit = isInitial ? initialLimit : limit;
-      const currentOffset = isInitial ? 0 : (initialLimit + (page - 2) * limit);
-      
-      const res = await fetch(\`\${workerOrigin}/adminApiBlog/api/blogs/public?projectId=\${projectId}&limit=\${currentLimit}&offset=\${currentOffset}\`);
-      const data = await res.json();
-      
-      if (data.blogs && data.blogs.length > 0) {
-        data.blogs.forEach(blog => {
-          const card = document.createElement('div');
-          card.className = 'cf-blog-card';
-          
-          const fallbackImg = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="100%" fill="%23e2e8f0"><rect width="100%" height="100%"/></svg>';
-          const imgUrl = blog.main_image_url || fallbackImg;
-          
-          card.innerHTML = \`
-            <div class="cf-blog-image">
-              <img src="\${imgUrl}" onerror="this.src='\${fallbackImg}'">
-            </div>
-            <div class="cf-blog-content">
-              <h3 class="cf-blog-title">\${blog.title || 'Untitled'}</h3>
-              <p class="cf-blog-subtitle">\${blog.subtitle || ''}</p>
-              <a href="\${workerOrigin}/adminApiBlog/blog/\${blog.slug}?project=\${projectId}" target="_blank" class="cf-blog-btn">Read More</a>
-            </div>
-          \`;
-          gridEl.appendChild(card);
-        });
+    const loaderEl = document.createElement('div');
+    loaderEl.className = 'cf-blog-loader';
+    loaderEl.innerText = 'Loading stories...';
+    listContainer.appendChild(loaderEl);
 
-        if (data.blogs.length < currentLimit) {
-          hasMore = false;
+    async function loadList() {
+      loaderEl.style.display = 'block';
+      try {
+        const res = await fetch(workerOrigin + '/adminApiBlog/api/blogs/public?projectId=' + projectId + '&limit=' + initialLimit + '&offset=0');
+        const data = await res.json();
+        
+        if (data.blogs && data.blogs.length > 0) {
+          data.blogs.forEach(blog => {
+            const card = document.createElement('div');
+            card.className = 'cf-blog-card';
+            
+            const imgUrl = blog.main_image_url || fallbackImg;
+            const dateStr = blog.created_at ? new Date(blog.created_at).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' }) : '';
+            
+            card.innerHTML = 
+              '<div class="cf-blog-image">' +
+              '  <img src="' + imgUrl + '" onerror="this.src=\\'' + fallbackImg + '\\'">' +
+              '</div>' +
+              '<div class="cf-blog-content">' +
+              (dateStr ? '  <div class="cf-blog-date">' + dateStr + '</div>' : '') +
+              '  <h3 class="cf-blog-title">' + (blog.title || 'Untitled') + '</h3>' +
+              '  <p class="cf-blog-subtitle">' + (blog.subtitle || '') + '</p>' +
+              '  <div class="cf-blog-read-more">Read More <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-left:4px; transition:transform 0.2s;"><line x1="5" y1="12" x2="19" y2="12"></line><polyline points="12 5 19 12 12 19"></polyline></svg></div>' +
+              '</div>';
+            
+            card.addEventListener('click', function() {
+              let targetUrl = redirectUrl;
+              if (targetUrl.includes('?')) {
+                targetUrl += (targetUrl.endsWith('&') || targetUrl.endsWith('?')) ? '' : '&';
+                targetUrl += 'id=' + blog.id;
+              } else {
+                targetUrl = targetUrl.replace(/\/$/, '') + '/' + blog.id;
+              }
+              window.location.href = targetUrl;
+            });
+            
+            gridEl.appendChild(card);
+          });
         } else {
-          page++;
-        }
-      } else {
-        hasMore = false;
-        if (isInitial) {
           gridEl.innerHTML = '<p style="color:#64748b; font-size:14px; grid-column:1/-1; text-align:center;">No published stories yet.</p>';
         }
+      } catch (err) {
+        console.error("Error loading blogs:", err);
+        gridEl.innerHTML = '<p class="cf-blog-error">Failed to load stories.</p>';
+      } finally {
+        loaderEl.style.display = 'none';
       }
-    } catch (err) {
-      console.error("Error loading blogs:", err);
-    } finally {
-      loading = false;
-      loaderEl.style.display = 'none';
     }
+    loadList();
   }
 
-  // Load first set
-  fetchBlogs(true);
-
-  // Setup infinite scroll
-  window.addEventListener('scroll', () => {
-    if ((window.innerHeight + window.scrollY) >= document.documentElement.scrollHeight - 100) {
-      fetchBlogs(false);
+  // --- RENDERING SINGLE POST MODE ---
+  if (postContainer) {
+    const projectId = postContainer.dataset.projectId;
+    if (!projectId) {
+      postContainer.innerHTML = '<p class="cf-blog-error">Error: data-project-id attribute is missing!</p>';
+      return;
     }
-  });
+
+    const urlParams = new URLSearchParams(window.location.search);
+    let blogId = urlParams.get('id') || urlParams.get('slug');
+    if (!blogId) {
+      const cleanPath = window.location.pathname.replace(/\/$/, '');
+      const pathParts = cleanPath.split('/');
+      const lastPart = pathParts[pathParts.length - 1];
+      if (lastPart && lastPart !== 'blog' && lastPart !== 'blogs' && lastPart !== 'index.html') {
+        blogId = lastPart;
+      }
+    }
+
+    if (!blogId) {
+      postContainer.innerHTML = '<p class="cf-blog-error">Error: Blog ID or slug is missing from URL path or query params (e.g. /blog/1 or ?id=1).</p>';
+      return;
+    }
+
+    const postLoaderEl = document.createElement('div');
+    postLoaderEl.className = 'cf-blog-loader';
+    postLoaderEl.innerText = 'Loading story details...';
+    postContainer.appendChild(postLoaderEl);
+
+    async function loadPost() {
+      try {
+        const res = await fetch(workerOrigin + '/adminApiBlog/api/blogs/public/single?projectId=' + projectId + '&id=' + blogId);
+        if (!res.ok) {
+          throw new Error('Blog not found');
+        }
+        const data = await res.json();
+        const blog = data.blog;
+
+        postContainer.innerHTML = ''; // Clear loader
+
+        const postWrap = document.createElement('article');
+        postWrap.className = 'cf-post-container';
+
+        const dateStr = blog.created_at ? new Date(blog.created_at).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' }) : '';
+        const imgSection = blog.main_image_url 
+          ? '<div class="cf-post-image"><img src="' + blog.main_image_url + '" onerror="this.parentNode.style.display=\\'none\\'"></div>'
+          : '';
+
+        let bodyHtml = '';
+        if (blog.paragraphs && Array.isArray(blog.paragraphs)) {
+          blog.paragraphs.forEach(function(p) {
+            if (p.subheading) {
+              bodyHtml += '<h2>' + p.subheading + '</h2>';
+            }
+            if (p.text) {
+              bodyHtml += p.text;
+            }
+          });
+        }
+
+        postWrap.innerHTML = 
+          '<header class="cf-post-header">' +
+          (dateStr ? '  <div class="cf-post-meta">Published on ' + dateStr + '</div>' : '') +
+          '  <h1 class="cf-post-title">' + blog.title + '</h1>' +
+          (blog.subtitle ? '  <p class="cf-post-subtitle">' + blog.subtitle + '</p>' : '') +
+          '</header>' +
+          imgSection +
+          '<div class="cf-post-body">' +
+          bodyHtml +
+          '</div>';
+
+        postContainer.appendChild(postWrap);
+      } catch (err) {
+        console.error("Error loading blog details:", err);
+        postContainer.innerHTML = '<p class="cf-blog-error">Story not found or failed to load.</p>';
+      }
+    }
+    loadPost();
+  }
 })();
       `;
       return new Response(embedScript, {
@@ -423,6 +632,64 @@ export default {
       });
     }
 
+    // Public single blog JSON fetch (for CDN JS snippet single view)
+    if (path === '/adminApiBlog/api/blogs/public/single' && request.method === 'GET') {
+      const projectId = url.searchParams.get('projectId');
+      const blogId = url.searchParams.get('id');
+
+      if (!projectId || !blogId) {
+        return new Response(JSON.stringify({ error: "projectId and id are required" }), {
+          status: 400,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      let query = supabase
+        .from('blogs')
+        .select('id, readable_id, title, subtitle, main_image_url, paragraphs, slug, created_at')
+        .eq('project_id', projectId);
+
+      if (/^\d+$/.test(blogId)) {
+        query = query.eq('readable_id', parseInt(blogId));
+      } else if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(blogId)) {
+        query = query.eq('id', blogId);
+      } else {
+        query = query.eq('slug', blogId);
+      }
+
+      const { data: blog, error } = await query.maybeSingle();
+
+      if (error) {
+        return new Response(JSON.stringify({ error: error.message }), {
+          status: 500,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      if (!blog) {
+        return new Response(JSON.stringify({ error: "Blog not found" }), {
+          status: 404,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      const formattedBlog = {
+        id: blog.readable_id || blog.id,
+        uuid: blog.id,
+        title: blog.title,
+        subtitle: blog.subtitle,
+        main_image_url: blog.main_image_url,
+        paragraphs: blog.paragraphs,
+        slug: blog.slug,
+        created_at: blog.created_at
+      };
+
+      return new Response(JSON.stringify({ blog: formattedBlog }), {
+        status: 200,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
     // Public blogs fetch (for CDN JS snippet)
     if (path === '/adminApiBlog/api/blogs/public' && request.method === 'GET') {
       const projectId = url.searchParams.get('projectId');
@@ -438,7 +705,7 @@ export default {
 
       const { data, error } = await supabase
         .from('blogs')
-        .select('id, title, subtitle, main_image_url, slug, created_at')
+        .select('id, readable_id, title, subtitle, main_image_url, slug, created_at')
         .eq('project_id', projectId)
         .order('created_at', { ascending: false })
         .range(offset, offset + limit - 1);
@@ -450,7 +717,17 @@ export default {
         });
       }
 
-      return new Response(JSON.stringify({ blogs: data }), {
+      const formattedBlogs = data.map(b => ({
+        id: b.readable_id || b.id,
+        uuid: b.id,
+        title: b.title,
+        subtitle: b.subtitle,
+        main_image_url: b.main_image_url,
+        slug: b.slug,
+        created_at: b.created_at
+      }));
+
+      return new Response(JSON.stringify({ blogs: formattedBlogs }), {
         status: 200,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
@@ -482,6 +759,7 @@ export default {
         }
 
         if (!isAuthorized && email.toLowerCase() !== (env.ADMIN_EMAIL || '').toLowerCase()) {
+          await logAction(supabaseAdmin, email, 'login_failed_unauthorized', { email }, request.headers.get('CF-Connecting-IP') || '');
           return new Response(JSON.stringify({ error: "Unauthorized email address." }), {
             status: 403,
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -497,6 +775,8 @@ export default {
           .upsert({ email: email.toLowerCase(), otp, expires_at: expiresAt.toISOString() }, { onConflict: 'email' });
 
         if (error) throw error;
+
+        await logAction(supabaseAdmin, email, 'otp_requested', { email }, request.headers.get('CF-Connecting-IP') || '');
 
         // Try to send email — but NEVER block the flow if it fails.
         // The OTP is already saved in DB and can still be verified.
@@ -537,6 +817,7 @@ export default {
           .single();
 
         if (error || !data) {
+          await logAction(supabaseAdmin, email, 'login_failed_invalid_session', { email }, request.headers.get('CF-Connecting-IP') || '');
           return new Response(JSON.stringify({ error: "Invalid login session." }), {
             status: 400,
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -544,6 +825,7 @@ export default {
         }
 
         if (data.otp !== otp) {
+          await logAction(supabaseAdmin, email, 'login_failed_incorrect_otp', { email }, request.headers.get('CF-Connecting-IP') || '');
           return new Response(JSON.stringify({ error: "Incorrect OTP." }), {
             status: 400,
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -551,6 +833,7 @@ export default {
         }
 
         if (new Date() > new Date(data.expires_at)) {
+          await logAction(supabaseAdmin, email, 'login_failed_expired_otp', { email }, request.headers.get('CF-Connecting-IP') || '');
           return new Response(JSON.stringify({ error: "OTP has expired." }), {
             status: 400,
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -584,6 +867,8 @@ export default {
 
         // Clean up OTP
         await supabaseAdmin.from('auth_otps').delete().eq('email', email.toLowerCase());
+
+        await logAction(supabaseAdmin, email, 'login_success', { email, role, projectId }, request.headers.get('CF-Connecting-IP') || '');
 
         return new Response(JSON.stringify({ token }), {
           status: 200,
@@ -650,6 +935,7 @@ export default {
         if (error) {
           return new Response(JSON.stringify({ error: error.message }), { status: 500, headers: corsHeaders });
         }
+        await logAction(supabaseAdmin, payload.email, 'project_created', { name, id: data.id }, request.headers.get('CF-Connecting-IP') || '');
         return new Response(JSON.stringify(data), {
           status: 201,
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -671,6 +957,7 @@ export default {
       if (error) {
         return new Response(JSON.stringify({ error: error.message }), { status: 500, headers: corsHeaders });
       }
+      await logAction(supabaseAdmin, payload.email, 'project_deleted', { id: projectDeleteMatch[1] }, request.headers.get('CF-Connecting-IP') || '');
       return new Response(JSON.stringify({ success: true }), { status: 200, headers: corsHeaders });
     }
 
@@ -716,7 +1003,7 @@ export default {
             .replace(/[^a-z0-9]+/g, '-')
             .replace(/(^-|-$)+/g, '');
 
-          const payload = {
+          const blogPayload = {
             project_id,
             title,
             subtitle,
@@ -731,21 +1018,34 @@ export default {
             // Update
             const { data, error } = await supabaseAdmin
               .from('blogs')
-              .update(payload)
+              .update(blogPayload)
               .eq('id', id)
               .select()
               .single();
             if (error) throw error;
             result = data;
+            await logAction(supabaseAdmin, payload.email, 'blog_updated', { title, slug, project_id, id }, request.headers.get('CF-Connecting-IP') || '');
           } else {
-            // Insert
+            // Insert - Auto-assign readable_id
+            const { data: maxBlog } = await supabaseAdmin
+              .from('blogs')
+              .select('readable_id')
+              .eq('project_id', project_id)
+              .order('readable_id', { ascending: false })
+              .limit(1)
+              .maybeSingle();
+
+            const nextReadableId = maxBlog && maxBlog.readable_id ? maxBlog.readable_id + 1 : 1;
+            blogPayload.readable_id = nextReadableId;
+
             const { data, error } = await supabaseAdmin
               .from('blogs')
-              .insert(payload)
+              .insert(blogPayload)
               .select()
               .single();
             if (error) throw error;
             result = data;
+            await logAction(supabaseAdmin, payload.email, 'blog_created', { title, slug, project_id, id: data.id }, request.headers.get('CF-Connecting-IP') || '');
           }
 
           return new Response(JSON.stringify(result), {
@@ -780,6 +1080,7 @@ export default {
       if (error) {
         return new Response(JSON.stringify({ error: error.message }), { status: 500, headers: corsHeaders });
       }
+      await logAction(supabaseAdmin, payload.email, 'blog_deleted', { id: blogId }, request.headers.get('CF-Connecting-IP') || '');
       return new Response(JSON.stringify({ success: true }), { status: 200, headers: corsHeaders });
     }
 
@@ -807,6 +1108,32 @@ export default {
         });
       } catch (err) {
         return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: corsHeaders });
+      }
+    }
+
+    // --- AUDIT LOGS ENDPOINT (RESTRICTED TO GLOBAL ADMINS/DEVELOPERS) ---
+    if (path === '/adminApiBlog/api/audit-logs') {
+      if (!payload || (payload.role !== 'admin' && payload.role !== 'developer') || payload.projectId) {
+        return new Response(JSON.stringify({ error: "Access denied. Only global admins/developers can view audit logs." }), { status: 403, headers: corsHeaders });
+      }
+
+      if (request.method === 'GET') {
+        const limit = parseInt(url.searchParams.get('limit')) || 100;
+        const offset = parseInt(url.searchParams.get('offset')) || 0;
+
+        const { data, error } = await supabaseAdmin
+          .from('audit_logs')
+          .select('*')
+          .order('created_at', { ascending: false })
+          .range(offset, offset + limit - 1);
+
+        if (error) {
+          return new Response(JSON.stringify({ error: error.message }), { status: 500, headers: corsHeaders });
+        }
+        return new Response(JSON.stringify({ logs: data }), {
+          status: 200,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
       }
     }
 
@@ -886,6 +1213,7 @@ export default {
         if (error) {
           return new Response(JSON.stringify({ error: error.message }), { status: 500, headers: corsHeaders });
         }
+        await logAction(supabaseAdmin, payload.email, 'user_added', { email: email.toLowerCase(), role, project_id }, request.headers.get('CF-Connecting-IP') || '');
         return new Response(JSON.stringify({ user: data }), {
           status: 201,
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -924,6 +1252,7 @@ export default {
       if (error) {
         return new Response(JSON.stringify({ error: error.message }), { status: 500, headers: corsHeaders });
       }
+      await logAction(supabaseAdmin, payload.email, 'user_deleted', { email: emailToDelete }, request.headers.get('CF-Connecting-IP') || '');
       return new Response(JSON.stringify({ success: true }), { status: 200, headers: corsHeaders });
     }
 
@@ -1191,6 +1520,8 @@ export default {
       overflow-x: auto;
       margin-top: 10px;
       box-shadow: inset 0 2px 8px rgba(0,0,0,0.5);
+      white-space: pre-wrap;
+      word-break: break-all;
     }
     .sitemap-item {
       display: flex;
@@ -1246,6 +1577,7 @@ export default {
       <div id="panel-projects" class="tab-section tab-active">
         <div style="margin-bottom: 20px; display: flex; gap: 10px; justify-content: flex-end;">
           <button class="btn btn-secondary global-only" onclick="showUsersPanel()">👥 User Permissions</button>
+          <button class="btn btn-secondary global-only" onclick="showAuditLogsPanel()">📜 Audit Logs</button>
         </div>
         
         <div class="card dev-only" style="margin-bottom: 25px;">
@@ -1265,7 +1597,7 @@ export default {
 
       <!-- USERS PANEL -->
       <div id="panel-users" class="tab-section">
-        <button class="btn btn-secondary" style="margin-bottom: 20px;" onclick="showPanel('panel-projects')">← Back to Projects</button>
+        <button class="btn btn-secondary" style="margin-bottom: 20px;" onclick="goBack()">← Back</button>
         
         <div class="card" style="margin-bottom: 25px;">
           <h3>Add / Invite User</h3>
@@ -1311,13 +1643,38 @@ export default {
         </div>
       </div>
 
+      <!-- AUDIT LOGS PANEL -->
+      <div id="panel-audit-logs" class="tab-section">
+        <button class="btn btn-secondary" style="margin-bottom: 20px;" onclick="goBack()">← Back</button>
+        
+        <h3 style="margin-bottom: 15px;">System Audit Trails & Login History</h3>
+        <div class="card" style="padding:0; overflow:hidden; margin-bottom: 25px;">
+          <table style="width:100%; border-collapse:collapse; text-align:left;">
+            <thead>
+              <tr style="border-bottom:1px solid rgba(255,255,255,0.08); background:rgba(255,255,255,0.02);">
+                <th style="padding:15px; font-size:12px; text-transform:uppercase; color:var(--muted); width: 180px;">Timestamp</th>
+                <th style="padding:15px; font-size:12px; text-transform:uppercase; color:var(--muted); width: 200px;">Email</th>
+                <th style="padding:15px; font-size:12px; text-transform:uppercase; color:var(--muted); width: 160px;">Action</th>
+                <th style="padding:15px; font-size:12px; text-transform:uppercase; color:var(--muted); width: 130px;">IP Address</th>
+                <th style="padding:15px; font-size:12px; text-transform:uppercase; color:var(--muted);">Details</th>
+              </tr>
+            </thead>
+            <tbody id="audit-logs-list">
+              <!-- Logs load here -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+
       <!-- SINGLE PROJECT VIEW (Blogs & Integrations) -->
       <div id="panel-project-detail" class="tab-section">
-        <div style="margin-bottom: 20px; display: flex; gap: 10px;">
+        <div style="margin-bottom: 20px; display: flex; gap: 10px; flex-wrap: wrap;">
           <button id="btn-back-to-projects" class="btn btn-secondary" onclick="showPanel('panel-projects')">← Back to Projects</button>
           <button class="btn" onclick="newBlog()">✍️ New Blog Story</button>
           <button class="btn btn-secondary dev-only" onclick="showIntegrations()">🔌 Get CDN Embed Snippet</button>
           <button class="btn btn-secondary dev-only" onclick="showSitemaps()">🔗 Get Sitemap Links</button>
+          <button class="btn btn-secondary global-only" onclick="showUsersPanel()">👥 User Permissions</button>
+          <button class="btn btn-secondary global-only" onclick="showAuditLogsPanel()">📜 Audit Logs</button>
         </div>
 
         <div class="card" style="margin-bottom: 25px;">
@@ -1334,13 +1691,21 @@ export default {
       <!-- INTEGRATIONS MODAL/PANEL -->
       <div id="panel-integrations" class="tab-section">
         <button class="btn btn-secondary" style="margin-bottom: 20px;" onclick="showPanel('panel-project-detail')">← Back to Blogs</button>
-        <div class="card">
-          <h3>CDN Script Integration Code</h3>
-          <p style="margin-top: 5px; margin-bottom: 15px;">Copy the code below and place it on any website where you want your blog stories to display. It will fetch automatically, render responsive cards, and support infinite scroll/pagination loading 15 items at a time.</p>
-          
-          <label>Embed HTML Snippet</label>
-          <div id="integration-snippet" class="snippet-box"></div>
-          <button class="btn" style="margin-top: 15px;" onclick="copySnippet()">Copy Snippet Code</button>
+        
+        <div class="card" style="margin-bottom: 20px;">
+          <h3>1. Home Page Integration (3x3 Grid View)</h3>
+          <p style="margin-top: 5px; margin-bottom: 15px;">Copy the code below and place it on your Home page. It will automatically render a responsive 3x3 blog card grid.</p>
+          <label>Embed HTML Snippet (Home Page)</label>
+          <div id="integration-snippet-home" class="snippet-box"></div>
+          <button class="btn" style="margin-top: 15px;" onclick="copySnippetHome()">Copy Home Page Snippet</button>
+        </div>
+
+        <div class="card" style="margin-top: 20px;">
+          <h3>2. Blog Page Integration (Single Post Reader)</h3>
+          <p style="margin-top: 5px; margin-bottom: 15px;">Copy the code below and place it on your Blog detail page. The script will dynamically load the post based on URL path (e.g. \`/blog/1\`) or query params (e.g. \`?id=1\`).</p>
+          <label>Embed HTML Snippet (Blog Page)</label>
+          <div id="integration-snippet-blog" class="snippet-box"></div>
+          <button class="btn" style="margin-top: 15px;" onclick="copySnippetBlog()">Copy Blog Page Snippet</button>
         </div>
       </div>
 
@@ -1412,6 +1777,8 @@ export default {
     let selectedProjectId = '';
     let projectsCache = [];
     let blogsCache = [];
+    let currentPanel = 'panel-projects';
+    let previousPanel = 'panel-projects';
 
     // On Load
     if (token) {
@@ -1481,11 +1848,21 @@ export default {
       showEmailStep();
     }
 
+
+
     function showPanel(panelId) {
+      if (panelId !== currentPanel) {
+        previousPanel = currentPanel;
+        currentPanel = panelId;
+      }
       document.querySelectorAll('#view-dashboard > .tab-section').forEach(el => {
         el.classList.remove('tab-active');
       });
       document.getElementById(panelId).classList.add('tab-active');
+    }
+
+    function goBack() {
+      showPanel(previousPanel);
     }
 
     // --- AUTH FLOW ---
@@ -1754,17 +2131,29 @@ export default {
 
     // --- INTEGRATIONS SNIPPET ---
     function showIntegrations() {
-      const snippet = '<!-- Container where the blog grid will load -->\\n' +
-        '<div id="certifyied-blog-container" data-project-id="' + selectedProjectId + '" data-limit="15"></div>\\n\\n' +
-        '<!-- Load dynamic list with infinite pagination from Cloudflare Worker CDN -->\\n' +
+      const homeSnippet = '<!-- Container where the 3x3 blog grid will load -->\\n' +
+        '<div id="certifyied-blog-container" data-project-id="' + selectedProjectId + '" data-limit="9" data-redirect-url="/blog"></div>\\n\\n' +
+        '<!-- Load CDN Embed Script -->\\n' +
         '<' + 'script src="' + baseUrl + '/api/embed"><' + '/script>';
-      document.getElementById('integration-snippet').innerText = snippet;
+      
+      const blogSnippet = '<!-- Container where the single blog post will load -->\\n' +
+        '<div id="certifyied-blog-post" data-project-id="' + selectedProjectId + '"></div>\\n\\n' +
+        '<!-- Load CDN Embed Script -->\\n' +
+        '<' + 'script src="' + baseUrl + '/api/embed"><' + '/script>';
+
+      document.getElementById('integration-snippet-home').innerText = homeSnippet;
+      document.getElementById('integration-snippet-blog').innerText = blogSnippet;
       showPanel('panel-integrations');
     }
 
-    function copySnippet() {
-      navigator.clipboard.writeText(document.getElementById('integration-snippet').innerText);
-      alert("Snippet code copied to clipboard!");
+    function copySnippetHome() {
+      navigator.clipboard.writeText(document.getElementById('integration-snippet-home').innerText);
+      alert("Home Page snippet code copied to clipboard!");
+    }
+
+    function copySnippetBlog() {
+      navigator.clipboard.writeText(document.getElementById('integration-snippet-blog').innerText);
+      alert("Blog Page snippet code copied to clipboard!");
     }
 
     // --- SITEMAPS GENERATOR ---
@@ -1808,6 +2197,71 @@ export default {
       const links = blogsCache.map(b => baseUrl + '/blog/' + b.slug + '?project=' + selectedProjectId).join('\\n');
       navigator.clipboard.writeText(links);
       alert("All blog links copied to clipboard!");
+    }
+
+    // --- SYSTEM AUDIT LOGS DISPLAY ---
+    async function showAuditLogsPanel() {
+      showPanel('panel-audit-logs');
+      loadAuditLogs();
+    }
+
+    async function loadAuditLogs() {
+      try {
+        const res = await fetch(baseUrl + "/api/audit-logs?limit=100", {
+          headers: { "Authorization": "Bearer " + token }
+        });
+        const data = await res.json();
+        const logs = data.logs || [];
+        renderAuditLogs(logs);
+      } catch (e) {
+        alert("Failed to load audit logs: " + e.message);
+      }
+    }
+
+    function renderAuditLogs(logs) {
+      const listEl = document.getElementById('audit-logs-list');
+      listEl.innerHTML = '';
+      if (logs.length === 0) {
+        listEl.innerHTML = '<tr><td colspan="5" style="padding:15px; text-align:center; color:var(--muted);">No audit logs found.</td></tr>';
+        return;
+      }
+      logs.forEach(log => {
+        const tr = document.createElement('tr');
+        tr.style.borderBottom = '1px solid rgba(255,255,255,0.05)';
+        
+        const tdTime = document.createElement('td');
+        tdTime.style.padding = '15px';
+        tdTime.style.fontSize = '13px';
+        tdTime.innerText = new Date(log.created_at).toLocaleString();
+        
+        const tdEmail = document.createElement('td');
+        tdEmail.style.padding = '15px';
+        tdEmail.style.fontSize = '13px';
+        tdEmail.innerText = log.email;
+        
+        const tdAction = document.createElement('td');
+        tdAction.style.padding = '15px';
+        tdAction.style.fontSize = '13px';
+        tdAction.innerHTML = '<span style="background:rgba(99,102,241,0.15); color:#818cf8; padding:3px 8px; border-radius:4px; font-weight:600;">' + log.action + '</span>';
+        
+        const tdIp = document.createElement('td');
+        tdIp.style.padding = '15px';
+        tdIp.style.fontSize = '13px';
+        tdIp.innerText = log.ip_address || 'N/A';
+        
+        const tdDetails = document.createElement('td');
+        tdDetails.style.padding = '15px';
+        tdDetails.style.fontSize = '12px';
+        tdDetails.style.color = 'var(--muted)';
+        tdDetails.innerText = JSON.stringify(log.details);
+        
+        tr.appendChild(tdTime);
+        tr.appendChild(tdEmail);
+        tr.appendChild(tdAction);
+        tr.appendChild(tdIp);
+        tr.appendChild(tdDetails);
+        listEl.appendChild(tr);
+      });
     }
 
     // --- USER PERMISSIONS MANAGEMENT ---
