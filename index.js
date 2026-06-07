@@ -116,6 +116,19 @@ export default {
 
     // --- Embed JS script for external sites ---
     if (path === '/adminApiBlog/api/embed' && request.method === 'GET') {
+      let rawColor = url.searchParams.get('color') || '10b981';
+      if (rawColor.startsWith('#')) rawColor = rawColor.substring(1);
+      if (!/^[0-9A-Fa-f]{6}$/i.test(rawColor) && !/^[0-9A-Fa-f]{3}$/i.test(rawColor)) {
+        rawColor = '10b981';
+      }
+      
+      const r = parseInt(rawColor.length === 3 ? rawColor[0]+rawColor[0] : rawColor.substring(0,2), 16);
+      const g = parseInt(rawColor.length === 3 ? rawColor[1]+rawColor[1] : rawColor.substring(2,4), 16);
+      const b = parseInt(rawColor.length === 3 ? rawColor[2]+rawColor[2] : rawColor.substring(4,6), 16);
+      
+      const primaryHex = '#' + rawColor;
+      const primaryRgb = `${r},${g},${b}`;
+
       const embedScript = `
 (function() {
   const workerOrigin = "${url.origin}";
@@ -127,63 +140,73 @@ export default {
     '  display: grid;' +
     '  grid-template-columns: 1fr;' +
     '  gap: 24px;' +
-    '  margin-bottom: 24px;' +
+    '  margin-bottom: 32px;' +
     '  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;' +
     '}' +
     '@media (min-width: 640px) {' +
-    '  .cf-blog-grid {' +
-    '    grid-template-columns: repeat(2, minmax(0, 1fr));' +
-    '  }' +
+    '  .cf-blog-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }' +
     '}' +
-    '@media (min-width: 1024px) {' +
-    '  .cf-blog-grid {' +
-    '    grid-template-columns: repeat(3, minmax(0, 1fr));' +
-    '  }' +
+    '@media (min-width: 900px) {' +
+    '  .cf-blog-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }' +
     '}' +
     '.cf-blog-card {' +
-    '  background: white;' +
-    '  border: 1px solid #e2e8f0;' +
-    '  border-radius: 12px;' +
+    '  background: #ffffff;' +
+    '  border-radius: 16px;' +
     '  overflow: hidden;' +
     '  display: flex;' +
     '  flex-direction: column;' +
-    '  box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);' +
-    '  transition: transform 0.2s, box-shadow 0.2s;' +
+    '  box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 4px 16px rgba(0,0,0,0.06);' +
+    '  transition: transform 0.3s ease, box-shadow 0.3s ease;' +
     '  cursor: pointer;' +
     '}' +
     '.cf-blog-card:hover {' +
-    '  transform: translateY(-4px);' +
-    '  box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1);' +
+    '  transform: translateY(-8px);' +
+    '  box-shadow: 0 12px 32px rgba(${primaryRgb},0.15), 0 2px 8px rgba(0,0,0,0.08);' +
     '}' +
     '.cf-blog-image {' +
     '  aspect-ratio: 16/9;' +
     '  width: 100%;' +
     '  background: #f1f5f9;' +
     '  overflow: hidden;' +
+    '  flex-shrink: 0;' +
     '}' +
     '.cf-blog-image img {' +
     '  width: 100%;' +
     '  height: 100%;' +
     '  object-fit: cover;' +
+    '  transition: transform 0.4s ease;' +
+    '}' +
+    '.cf-blog-card:hover .cf-blog-image img {' +
+    '  transform: scale(1.05);' +
     '}' +
     '.cf-blog-content {' +
-    '  padding: 20px;' +
+    '  padding: 16px 20px 20px;' +
     '  display: flex;' +
     '  flex-direction: column;' +
     '  flex-grow: 1;' +
     '}' +
     '.cf-blog-date {' +
     '  font-size: 12px;' +
-    '  color: #94a3b8;' +
-    '  text-transform: uppercase;' +
-    '  letter-spacing: 0.05em;' +
-    '  margin-bottom: 6px;' +
+    '  font-weight: 500;' +
+    '  color: #6b7280;' +
+    '  margin-bottom: 10px;' +
+    '  display: inline-flex;' +
+    '  align-items: center;' +
+    '  gap: 6px;' +
+    '}' +
+    '.cf-blog-date::before {' +
+    '  content: "";' +
+    '  width: 6px;' +
+    '  height: 6px;' +
+    '  border-radius: 50%;' +
+    '  background: ${primaryHex};' +
+    '  flex-shrink: 0;' +
     '}' +
     '.cf-blog-title {' +
     '  font-size: 18px;' +
-    '  font-weight: 700;' +
-    '  color: #0f172a;' +
-    '  margin: 8px 0;' +
+    '  font-weight: 600;' +
+    '  color: #111827;' +
+    '  margin: 0 0 12px;' +
     '  line-height: 1.4;' +
     '  display: -webkit-box;' +
     '  -webkit-line-clamp: 2;' +
@@ -192,32 +215,27 @@ export default {
     '}' +
     '.cf-blog-subtitle {' +
     '  font-size: 14px;' +
-    '  color: #64748b;' +
-    '  margin-bottom: 16px;' +
+    '  color: #6b7280;' +
+    '  margin-bottom: 20px;' +
     '  flex-grow: 1;' +
-    '  line-height: 1.5;' +
+    '  line-height: 1.6;' +
     '  display: -webkit-box;' +
     '  -webkit-line-clamp: 3;' +
     '  -webkit-box-orient: vertical;' +
     '  overflow: hidden;' +
     '}' +
     '.cf-blog-read-more {' +
-    '  font-size: 13px;' +
-    '  font-weight: 600;' +
-    '  color: #2563eb;' +
+    '  font-size: 14px;' +
+    '  font-weight: 500;' +
+    '  color: ${primaryHex};' +
     '  display: inline-flex;' +
     '  align-items: center;' +
     '  gap: 4px;' +
     '  margin-top: auto;' +
+    '  transition: gap 0.2s ease;' +
     '}' +
     '.cf-blog-card:hover .cf-blog-read-more {' +
-    '  color: #1d4ed8;' +
-    '}' +
-    '.cf-blog-read-more svg {' +
-    '  transition: transform 0.2s;' +
-    '}' +
-    '.cf-blog-card:hover .cf-blog-read-more svg {' +
-    '  transform: translateX(4px);' +
+    '  gap: 8px;' +
     '}' +
     '.cf-blog-loader {' +
     '  text-align: center;' +
@@ -299,171 +317,443 @@ export default {
     '}' +
     '.cf-post-body li {' +
     '  margin-bottom: 8px;' +
+    '}' +
+    '.cf-pagination {' +
+    '  display: flex;' +
+    '  align-items: center;' +
+    '  justify-content: center;' +
+    '  gap: 8px;' +
+    '  margin-top: 32px;' +
+    '  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;' +
+    '}' +
+    '.cf-page-btn {' +
+    '  display: inline-flex;' +
+    '  align-items: center;' +
+    '  justify-content: center;' +
+    '  min-width: 36px;' +
+    '  height: 36px;' +
+    '  padding: 0 12px;' +
+    '  border-radius: 8px;' +
+    '  border: 1px solid #e2e8f0;' +
+    '  background: white;' +
+    '  color: #374151;' +
+    '  font-size: 14px;' +
+    '  font-weight: 500;' +
+    '  cursor: pointer;' +
+    '  transition: all 0.15s;' +
+    '}' +
+    '.cf-page-btn:hover:not(:disabled) {' +
+    '  background: #f1f5f9;' +
+    '  border-color: #94a3b8;' +
+    '}' +
+    '.cf-page-btn.active {' +
+    '  background: ${primaryHex};' +
+    '  color: white;' +
+    '  border-color: ${primaryHex};' +
+    '}' +
+    '.cf-page-btn:disabled {' +
+    '  opacity: 0.4;' +
+    '  cursor: not-allowed;' +
+    '}' +
+    '.cf-page-info {' +
+    '  font-size: 13px;' +
+    '  color: #64748b;' +
+    '  padding: 0 4px;' +
     '}';
   document.head.appendChild(style);
 
-  const listContainer = document.getElementById('certifyied-blog-container');
-  const postContainer = document.getElementById('certifyied-blog-post');
   const fallbackImg = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="100%" fill="%23e2e8f0"><rect width="100%" height="100%"/></svg>';
 
-  // --- RENDERING LIST MODE ---
-  if (listContainer) {
-    const projectId = listContainer.dataset.projectId;
-    const initialLimit = parseInt(listContainer.dataset.limit) || 9;
-    const redirectUrl = listContainer.dataset.redirectUrl || '/blog';
-    
-    if (!projectId) {
-      listContainer.innerHTML = '<p class="cf-blog-error">Error: data-project-id attribute is missing!</p>';
-      return;
+  async function checkAndRender() {
+    const listContainer = document.getElementById('certifyied-blog-container');
+    const postContainer = document.getElementById('certifyied-blog-post');
+
+    // --- RENDERING LIST MODE (with pagination) ---
+    if (listContainer && !listContainer.dataset.rendered) {
+      listContainer.dataset.rendered = 'true';
+      const projectId = listContainer.dataset.projectId;
+      const pageSize = parseInt(listContainer.dataset.limit) || 9;
+      const redirectUrl = listContainer.dataset.redirectUrl || '/blog';
+
+      if (!projectId) {
+        listContainer.innerHTML = '<p class="cf-blog-error">Error: data-project-id attribute is missing!</p>';
+        return;
+      }
+
+      const gridEl = document.createElement('div');
+      gridEl.className = 'cf-blog-grid';
+      listContainer.appendChild(gridEl);
+
+      const loaderEl = document.createElement('div');
+      loaderEl.className = 'cf-blog-loader';
+      loaderEl.innerText = 'Loading stories...';
+      listContainer.appendChild(loaderEl);
+
+      const paginationEl = document.createElement('div');
+      paginationEl.className = 'cf-pagination';
+      listContainer.appendChild(paginationEl);
+
+      let currentPage = 1;
+      let totalBlogs = 0;
+
+      function renderCards(blogs) {
+        gridEl.innerHTML = '';
+        blogs.forEach(blog => {
+          const card = document.createElement('div');
+          card.className = 'cf-blog-card';
+          const dateStr = blog.created_at ? new Date(blog.created_at).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' }) : '';
+          
+          let imageHtml = '';
+          let titleHtml = '';
+
+          if (blog.main_image_url) {
+            imageHtml = '<div class="cf-blog-image"><img src="' + blog.main_image_url + '" onerror="this.src=\\'' + fallbackImg + '\\'"></div>';
+            titleHtml = '<h3 class="cf-blog-title">' + (blog.title || 'Untitled') + '</h3>';
+          } else {
+            imageHtml = '<div class="cf-blog-image" style="background: linear-gradient(135deg, rgba(${primaryRgb},0.85), rgba(${primaryRgb},1)), url(\\'https://images.unsplash.com/photo-1557682250-33bd709cbe85?q=80&w=800&auto=format&fit=crop\\') center/cover; padding: 32px 24px 24px; display: flex; align-items: flex-end; justify-content: flex-start; text-align: left;">' +
+                        '  <h3 style="color: white; font-size: 26px; font-weight: 800; margin: 0; line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, \\'Segoe UI\\', Roboto, sans-serif; text-shadow: 0 2px 4px rgba(0,0,0,0.15);">' + (blog.title || 'Untitled') + '</h3>' +
+                        '</div>';
+            titleHtml = '';
+          }
+
+          card.innerHTML =
+            imageHtml +
+            '<div class="cf-blog-content">' +
+            (dateStr ? '  <div class="cf-blog-date">' + dateStr + '</div>' : '') +
+            titleHtml +
+            '  <p class="cf-blog-subtitle">' + (blog.subtitle || '') + '</p>' +
+            '  <span class="cf-blog-read-more">Read More →</span>' +
+            '</div>';
+
+          card.addEventListener('click', function() {
+            let baseUrl = redirectUrl.split('?')[0].replace(/\\/$/, '');
+            let params = redirectUrl.split('?')[1] ? ('&' + redirectUrl.split('?')[1]) : '';
+            let targetUrl = baseUrl + '/' + (blog.slug || '') + '?id=' + blog.id + params;
+            window.location.href = targetUrl;
+          });
+          gridEl.appendChild(card);
+        });
+      }
+
+      function renderPagination(total) {
+        const totalPages = Math.ceil(total / pageSize);
+        paginationEl.innerHTML = '';
+        if (totalPages <= 1) return;
+
+        const prevBtn = document.createElement('button');
+        prevBtn.className = 'cf-page-btn';
+        prevBtn.innerHTML = '&#8592; Prev';
+        prevBtn.disabled = currentPage === 1;
+        prevBtn.addEventListener('click', function() {
+          if (currentPage > 1) { currentPage--; loadPage(true); }
+        });
+        paginationEl.appendChild(prevBtn);
+
+        const info = document.createElement('span');
+        info.className = 'cf-page-info';
+        info.innerText = 'Page ' + currentPage + ' of ' + totalPages;
+        paginationEl.appendChild(info);
+
+        const nextBtn = document.createElement('button');
+        nextBtn.className = 'cf-page-btn';
+        nextBtn.innerHTML = 'Next &#8594;';
+        nextBtn.disabled = currentPage === totalPages;
+        nextBtn.addEventListener('click', function() {
+          if (currentPage < totalPages) { currentPage++; loadPage(true); }
+        });
+        paginationEl.appendChild(nextBtn);
+      }
+
+      async function loadPage(scrollToTop = false) {
+        loaderEl.style.display = 'block';
+        gridEl.innerHTML = '';
+        paginationEl.innerHTML = '';
+        const offset = (currentPage - 1) * pageSize;
+        try {
+          const res = await fetch(workerOrigin + '/adminApiBlog/api/blogs/public?projectId=' + projectId + '&limit=' + pageSize + '&offset=' + offset);
+          const data = await res.json();
+          if (data.blogs && data.blogs.length > 0) {
+            totalBlogs = data.total || totalBlogs || data.blogs.length;
+            renderCards(data.blogs);
+            renderPagination(totalBlogs);
+            if (scrollToTop) listContainer.scrollIntoView({ behavior: "smooth", block: "start" });
+          } else if (currentPage === 1) {
+            gridEl.innerHTML = '<p style="color:#64748b; font-size:14px; grid-column:1/-1; text-align:center;">No published stories yet.</p>';
+          }
+        } catch (err) {
+          console.error("Error loading blogs:", err);
+          gridEl.innerHTML = '<p class="cf-blog-error">Failed to load stories.</p>';
+        } finally {
+          loaderEl.style.display = 'none';
+        }
+      }
+      loadPage();
     }
 
-    const gridEl = document.createElement('div');
-    gridEl.className = 'cf-blog-grid';
-    listContainer.appendChild(gridEl);
+    // --- RENDERING SINGLE POST MODE (OR FALLBACK TO LIST MODE) ---
+    if (postContainer && !postContainer.dataset.rendered) {
+      const projectId = postContainer.dataset.projectId;
+      if (!projectId) {
+        postContainer.innerHTML = '<p class="cf-blog-error">Error: data-project-id attribute is missing!</p>';
+        return;
+      }
 
-    const loaderEl = document.createElement('div');
-    loaderEl.className = 'cf-blog-loader';
-    loaderEl.innerText = 'Loading stories...';
-    listContainer.appendChild(loaderEl);
+      const urlParams = new URLSearchParams(window.location.search);
+      let blogId = urlParams.get('id') || urlParams.get('slug') || urlParams.get('slug');
+      if (!blogId) {
+        const cleanPath = window.location.pathname.replace(/\\/$/, '');
+        const pathParts = cleanPath.split('/');
+        const lastPart = pathParts[pathParts.length - 1];
+        if (lastPart && lastPart !== 'blog' && lastPart !== 'blogs' && lastPart !== 'index.html') {
+          blogId = lastPart;
+        }
+      }
 
-    async function loadList() {
-      loaderEl.style.display = 'block';
-      try {
-        const res = await fetch(workerOrigin + '/adminApiBlog/api/blogs/public?projectId=' + projectId + '&limit=' + initialLimit + '&offset=0');
-        const data = await res.json();
-        
-        if (data.blogs && data.blogs.length > 0) {
-          data.blogs.forEach(blog => {
+      if (blogId) {
+        postContainer.dataset.rendered = 'true';
+        const postLoaderEl = document.createElement('div');
+        postLoaderEl.className = 'cf-blog-loader';
+        postLoaderEl.innerText = 'Loading story details...';
+        postContainer.appendChild(postLoaderEl);
+
+        async function loadPost() {
+          try {
+            const res = await fetch(workerOrigin + '/adminApiBlog/api/blogs/public/single?projectId=' + projectId + '&id=' + blogId);
+            if (!res.ok) {
+              throw new Error('Blog not found');
+            }
+            const data = await res.json();
+            const blog = data.blog;
+
+            postContainer.innerHTML = ''; // Clear loader
+
+            const postWrap = document.createElement('article');
+            postWrap.className = 'cf-post-container';
+
+            const dateStr = blog.created_at ? new Date(blog.created_at).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' }) : '';
+            const imgSection = blog.main_image_url 
+              ? '<div class="cf-post-image"><img src="' + blog.main_image_url + '" onerror="this.parentNode.style.display=\\'none\\'"></div>'
+              : '';
+
+            let bodyHtml = '';
+            if (blog.paragraphs && Array.isArray(blog.paragraphs)) {
+              blog.paragraphs.forEach(function(p) {
+                if (p.subheading) {
+                  bodyHtml += '<h2>' + p.subheading + '</h2>';
+                }
+                if (p.text) {
+                  bodyHtml += p.text;
+                }
+              });
+            }
+
+            postWrap.innerHTML = 
+              '<header class="cf-post-header">' +
+              (dateStr ? '  <div class="cf-post-meta">Published on ' + dateStr + '</div>' : '') +
+              '  <h1 class="cf-post-title">' + blog.title + '</h1>' +
+              (blog.subtitle ? '  <p class="cf-post-subtitle">' + blog.subtitle + '</p>' : '') +
+              '</header>' +
+              imgSection +
+              '<div class="cf-post-body">' +
+              bodyHtml +
+              '</div>';
+
+            postContainer.appendChild(postWrap);
+          } catch (err) {
+            console.error("Error loading blog details:", err);
+            postContainer.innerHTML = '<p class="cf-blog-error">Story not found or failed to load.</p>';
+          }
+        }
+        loadPost();
+      } else {
+        // Fallback to List Mode (with pagination)
+        postContainer.dataset.rendered = 'true';
+        const pageSize2 = parseInt(postContainer.dataset.limit) || 9;
+        const redirectUrl2 = postContainer.dataset.redirectUrl || window.location.pathname;
+
+        const gridEl2 = document.createElement('div');
+        gridEl2.className = 'cf-blog-grid';
+        postContainer.appendChild(gridEl2);
+
+        const loaderEl2 = document.createElement('div');
+        loaderEl2.className = 'cf-blog-loader';
+        loaderEl2.innerText = 'Loading stories...';
+        postContainer.appendChild(loaderEl2);
+
+        const paginationEl2 = document.createElement('div');
+        paginationEl2.className = 'cf-pagination';
+        postContainer.appendChild(paginationEl2);
+
+        let currentPage2 = 1;
+        let totalBlogs2 = 0;
+
+        function renderCards2(blogs) {
+          gridEl2.innerHTML = '';
+          blogs.forEach(blog => {
             const card = document.createElement('div');
             card.className = 'cf-blog-card';
-            
-            const imgUrl = blog.main_image_url || fallbackImg;
-            const dateStr = blog.created_at ? new Date(blog.created_at).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' }) : '';
-            
-            card.innerHTML = 
-              '<div class="cf-blog-image">' +
-              '  <img src="' + imgUrl + '" onerror="this.src=\\'' + fallbackImg + '\\'">' +
-              '</div>' +
+          const dateStr = blog.created_at ? new Date(blog.created_at).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' }) : '';
+          let imageHtml2 = '';
+          let titleHtml2 = '';
+
+          if (blog.main_image_url) {
+            imageHtml2 = '<div class="cf-blog-image"><img src="' + blog.main_image_url + '" onerror="this.src=\\'' + fallbackImg + '\\'"></div>';
+            titleHtml2 = '<h3 class="cf-blog-title">' + (blog.title || 'Untitled') + '</h3>';
+          } else {
+            imageHtml2 = '<div class="cf-blog-image" style="background: linear-gradient(135deg, rgba(${primaryRgb},0.85), rgba(${primaryRgb},1)), url(\\'https://images.unsplash.com/photo-1557682250-33bd709cbe85?q=80&w=800&auto=format&fit=crop\\') center/cover; padding: 32px 24px 24px; display: flex; align-items: flex-end; justify-content: flex-start; text-align: left;">' +
+                        '  <h3 style="color: white; font-size: 26px; font-weight: 800; margin: 0; line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, \\'Segoe UI\\', Roboto, sans-serif; text-shadow: 0 2px 4px rgba(0,0,0,0.15);">' + (blog.title || 'Untitled') + '</h3>' +
+                        '</div>';
+            titleHtml2 = '';
+          }
+
+            card.innerHTML =
+              imageHtml2 +
               '<div class="cf-blog-content">' +
               (dateStr ? '  <div class="cf-blog-date">' + dateStr + '</div>' : '') +
-              '  <h3 class="cf-blog-title">' + (blog.title || 'Untitled') + '</h3>' +
+              titleHtml2 +
               '  <p class="cf-blog-subtitle">' + (blog.subtitle || '') + '</p>' +
-              '  <div class="cf-blog-read-more">Read More <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-left:4px; transition:transform 0.2s;"><line x1="5" y1="12" x2="19" y2="12"></line><polyline points="12 5 19 12 12 19"></polyline></svg></div>' +
+              '  <span class="cf-blog-read-more">Read More →</span>' +
               '</div>';
-            
             card.addEventListener('click', function() {
-              let targetUrl = redirectUrl;
-              if (targetUrl.includes('?')) {
-                targetUrl += (targetUrl.endsWith('&') || targetUrl.endsWith('?')) ? '' : '&';
-                targetUrl += 'id=' + blog.id;
-              } else {
-                targetUrl = targetUrl.replace(/\/$/, '') + '/' + blog.id;
-              }
+              let baseUrl = redirectUrl2.split('?')[0].replace(/\\/$/, '');
+              let params = redirectUrl2.split('?')[1] ? ('&' + redirectUrl2.split('?')[1]) : '';
+              let targetUrl = baseUrl + '/' + (blog.slug || '') + '?id=' + blog.id + params;
               window.location.href = targetUrl;
             });
-            
-            gridEl.appendChild(card);
+            gridEl2.appendChild(card);
           });
-        } else {
-          gridEl.innerHTML = '<p style="color:#64748b; font-size:14px; grid-column:1/-1; text-align:center;">No published stories yet.</p>';
         }
-      } catch (err) {
-        console.error("Error loading blogs:", err);
-        gridEl.innerHTML = '<p class="cf-blog-error">Failed to load stories.</p>';
-      } finally {
-        loaderEl.style.display = 'none';
+
+        function renderPagination2(total) {
+          const totalPages = Math.ceil(total / pageSize2);
+          paginationEl2.innerHTML = '';
+          if (totalPages <= 1) return;
+
+          const prevBtn = document.createElement('button');
+          prevBtn.className = 'cf-page-btn';
+          prevBtn.innerHTML = '&#8592; Prev';
+          prevBtn.disabled = currentPage2 === 1;
+          prevBtn.addEventListener('click', function() {
+            if (currentPage2 > 1) { currentPage2--; loadPage2(true); }
+          });
+          paginationEl2.appendChild(prevBtn);
+
+          const info = document.createElement('span');
+          info.className = 'cf-page-info';
+          info.innerText = 'Page ' + currentPage2 + ' of ' + totalPages;
+          paginationEl2.appendChild(info);
+
+          const nextBtn = document.createElement('button');
+          nextBtn.className = 'cf-page-btn';
+          nextBtn.innerHTML = 'Next &#8594;';
+          nextBtn.disabled = currentPage2 === totalPages;
+          nextBtn.addEventListener('click', function() {
+            if (currentPage2 < totalPages) { currentPage2++; loadPage2(true); }
+          });
+          paginationEl2.appendChild(nextBtn);
+        }
+
+        async function loadPage2(scrollToTop = false) {
+          loaderEl2.style.display = 'block';
+          gridEl2.innerHTML = '';
+          paginationEl2.innerHTML = '';
+          const offset = (currentPage2 - 1) * pageSize2;
+          try {
+            const res = await fetch(workerOrigin + '/adminApiBlog/api/blogs/public?projectId=' + projectId + '&limit=' + pageSize2 + '&offset=' + offset);
+            const data = await res.json();
+            if (data.blogs && data.blogs.length > 0) {
+              totalBlogs2 = data.total || totalBlogs2 || data.blogs.length;
+              renderCards2(data.blogs);
+              renderPagination2(totalBlogs2);
+              if (scrollToTop) postContainer.scrollIntoView({ behavior: "smooth", block: "start" });
+            } else if (currentPage2 === 1) {
+              gridEl2.innerHTML = '<p style="color:#64748b; font-size:14px; grid-column:1/-1; text-align:center;">No published stories yet.</p>';
+            }
+          } catch (err) {
+            console.error("Error loading blogs:", err);
+            gridEl2.innerHTML = '<p class="cf-blog-error">Failed to load stories.</p>';
+          } finally {
+            loaderEl2.style.display = 'none';
+          }
+        }
+        loadPage2();
       }
     }
-    loadList();
   }
 
-  // --- RENDERING SINGLE POST MODE ---
-  if (postContainer) {
-    const projectId = postContainer.dataset.projectId;
-    if (!projectId) {
-      postContainer.innerHTML = '<p class="cf-blog-error">Error: data-project-id attribute is missing!</p>';
-      return;
-    }
+  // Initial execution
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', checkAndRender);
+  } else {
+    checkAndRender();
+  }
 
-    const urlParams = new URLSearchParams(window.location.search);
-    let blogId = urlParams.get('id') || urlParams.get('slug');
-    if (!blogId) {
-      const cleanPath = window.location.pathname.replace(/\/$/, '');
-      const pathParts = cleanPath.split('/');
-      const lastPart = pathParts[pathParts.length - 1];
-      if (lastPart && lastPart !== 'blog' && lastPart !== 'blogs' && lastPart !== 'index.html') {
-        blogId = lastPart;
-      }
-    }
-
-    if (!blogId) {
-      postContainer.innerHTML = '<p class="cf-blog-error">Error: Blog ID or slug is missing from URL path or query params (e.g. /blog/1 or ?id=1).</p>';
-      return;
-    }
-
-    const postLoaderEl = document.createElement('div');
-    postLoaderEl.className = 'cf-blog-loader';
-    postLoaderEl.innerText = 'Loading story details...';
-    postContainer.appendChild(postLoaderEl);
-
-    async function loadPost() {
-      try {
-        const res = await fetch(workerOrigin + '/adminApiBlog/api/blogs/public/single?projectId=' + projectId + '&id=' + blogId);
-        if (!res.ok) {
-          throw new Error('Blog not found');
-        }
-        const data = await res.json();
-        const blog = data.blog;
-
-        postContainer.innerHTML = ''; // Clear loader
-
-        const postWrap = document.createElement('article');
-        postWrap.className = 'cf-post-container';
-
-        const dateStr = blog.created_at ? new Date(blog.created_at).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' }) : '';
-        const imgSection = blog.main_image_url 
-          ? '<div class="cf-post-image"><img src="' + blog.main_image_url + '" onerror="this.parentNode.style.display=\\'none\\'"></div>'
-          : '';
-
-        let bodyHtml = '';
-        if (blog.paragraphs && Array.isArray(blog.paragraphs)) {
-          blog.paragraphs.forEach(function(p) {
-            if (p.subheading) {
-              bodyHtml += '<h2>' + p.subheading + '</h2>';
-            }
-            if (p.text) {
-              bodyHtml += p.text;
-            }
-          });
-        }
-
-        postWrap.innerHTML = 
-          '<header class="cf-post-header">' +
-          (dateStr ? '  <div class="cf-post-meta">Published on ' + dateStr + '</div>' : '') +
-          '  <h1 class="cf-post-title">' + blog.title + '</h1>' +
-          (blog.subtitle ? '  <p class="cf-post-subtitle">' + blog.subtitle + '</p>' : '') +
-          '</header>' +
-          imgSection +
-          '<div class="cf-post-body">' +
-          bodyHtml +
-          '</div>';
-
-        postContainer.appendChild(postWrap);
-      } catch (err) {
-        console.error("Error loading blog details:", err);
-        postContainer.innerHTML = '<p class="cf-blog-error">Story not found or failed to load.</p>';
-      }
-    }
-    loadPost();
+  // MutationObserver to watch for dynamically added elements (e.g. SPAs like React)
+  if (typeof MutationObserver !== 'undefined') {
+    const observer = new MutationObserver(function(mutations) {
+      checkAndRender();
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
   }
 })();
       `;
       return new Response(embedScript, {
         headers: {
           'Content-Type': 'application/javascript',
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
           ...corsHeaders,
         },
       });
+    }
+
+    // --- SITEMAPS API ---
+    if (path === '/adminApiBlog/api/sitemaps' && request.method === 'GET') {
+      const authHeader = request.headers.get('Authorization');
+      if (!authHeader || !authHeader.startsWith('Bearer ')) return new Response("Unauthorized", { status: 401, headers: corsHeaders });
+      const token = authHeader.substring(7);
+      const payload = await verifyJWT(env, token);
+      if (!payload) return new Response("Unauthorized", { status: 401, headers: corsHeaders });
+      
+      const projectId = url.searchParams.get('projectId');
+      const { data, error } = await supabaseAdmin.from('sitemaps').select('*').eq('project_id', projectId);
+      if (error) return new Response(JSON.stringify({ error: error.message }), { status: 500, headers: corsHeaders });
+      return new Response(JSON.stringify({ sitemaps: data }), { status: 200, headers: corsHeaders });
+    }
+
+    if (path === '/adminApiBlog/api/sitemaps' && request.method === 'POST') {
+      const authHeader = request.headers.get('Authorization');
+      if (!authHeader || !authHeader.startsWith('Bearer ')) return new Response("Unauthorized", { status: 401, headers: corsHeaders });
+      const token = authHeader.substring(7);
+      const payload = await verifyJWT(env, token);
+      if (!payload) return new Response("Unauthorized", { status: 401, headers: corsHeaders });
+      
+      const body = await request.json();
+      const { data, error } = await supabaseAdmin.from('sitemaps').insert({
+        project_id: body.project_id,
+        loc: body.loc,
+        changefreq: body.changefreq || 'monthly',
+        priority: body.priority || 0.8
+      }).select().single();
+      
+      if (error) return new Response(JSON.stringify({ error: error.message }), { status: 500, headers: corsHeaders });
+      return new Response(JSON.stringify({ sitemap: data }), { status: 200, headers: corsHeaders });
+    }
+
+    if (path === '/adminApiBlog/api/sitemap.xml' && request.method === 'GET') {
+      const projectId = url.searchParams.get('projectId');
+      const { data, error } = await supabaseAdmin.from('sitemaps').select('*').eq('project_id', projectId);
+      if (error) return new Response("Error", { status: 500, headers: corsHeaders });
+      
+      let xml = '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n';
+      for (const item of (data || [])) {
+        xml += '  <url>\n    <loc>' + item.loc + '</loc>\n    <changefreq>' + item.changefreq + '</changefreq>\n    <priority>' + item.priority + '</priority>\n  </url>\n';
+      }
+      xml += '</urlset>';
+      
+      const xmlHeaders = new Headers(corsHeaders);
+      xmlHeaders.set('Content-Type', 'application/xml');
+      xmlHeaders.set('Cache-Control', 'public, max-age=3600');
+      return new Response(xml, { status: 200, headers: xmlHeaders });
     }
 
     // --- Serve public single blog viewing page ---
@@ -581,6 +871,9 @@ export default {
       border-radius: 8px;
       object-fit: cover;
     }
+  
+    
+
   </style>
 </head>
 <body>
@@ -703,9 +996,9 @@ export default {
         });
       }
 
-      const { data, error } = await supabase
+      const { data, error, count } = await supabase
         .from('blogs')
-        .select('id, readable_id, title, subtitle, main_image_url, slug, created_at')
+        .select('id, readable_id, title, subtitle, main_image_url, slug, created_at, paragraphs', { count: 'exact' })
         .eq('project_id', projectId)
         .order('created_at', { ascending: false })
         .range(offset, offset + limit - 1);
@@ -717,17 +1010,26 @@ export default {
         });
       }
 
-      const formattedBlogs = data.map(b => ({
-        id: b.readable_id || b.id,
-        uuid: b.id,
-        title: b.title,
-        subtitle: b.subtitle,
-        main_image_url: b.main_image_url,
-        slug: b.slug,
-        created_at: b.created_at
-      }));
+      const formattedBlogs = data.map(b => {
+        let snippet = b.subtitle || '';
+        if (!snippet && b.paragraphs && Array.isArray(b.paragraphs)) {
+          const firstText = b.paragraphs.find(p => p.type === 'text' && p.text);
+          if (firstText) {
+            snippet = firstText.text.replace(/<[^>]+>/g, '').substring(0, 150).trim() + '...';
+          }
+        }
+        return {
+          id: b.readable_id || b.id,
+          uuid: b.id,
+          title: b.title,
+          subtitle: snippet,
+          main_image_url: b.main_image_url,
+          slug: b.slug,
+          created_at: b.created_at
+        };
+      });
 
-      return new Response(JSON.stringify({ blogs: formattedBlogs }), {
+      return new Response(JSON.stringify({ blogs: formattedBlogs, total: count }), {
         status: 200,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
@@ -922,13 +1224,20 @@ export default {
         if (payload.projectId) {
           return new Response(JSON.stringify({ error: "Access denied. Restricted users cannot create projects." }), { status: 403, headers: corsHeaders });
         }
-        const { name } = await request.json();
+        const { name, url: targetUrl } = await request.json();
         if (!name) {
           return new Response(JSON.stringify({ error: "Project name is required" }), { status: 400, headers: corsHeaders });
         }
+        
+        // Define insert payload
+        const insertPayload = { name };
+        if (targetUrl) {
+          insertPayload.base_url = targetUrl;
+        }
+
         const { data, error } = await supabaseAdmin
           .from('projects')
-          .insert({ name })
+          .insert(insertPayload)
           .select()
           .single();
 
@@ -1257,7 +1566,7 @@ export default {
     }
 
     // --- Serve HTML Dashboard ---
-    if (path === '/adminApiBlog' && request.method === 'GET') {
+    if ((path === '/adminApiBlog' || path === '/blogLogin' || path === '/' || path === '') && request.method === 'GET') {
       const dashboardHTML = `
 <!DOCTYPE html>
 <html lang="en">
@@ -1266,21 +1575,21 @@ export default {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Certifyied SEO Blog Engine - Client Portal</title>
   <!-- Google Fonts & Quill CSS -->
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link href="https://cdn.quilljs.com/1.3.6/quill.snow.css" rel="stylesheet">
   <script src="https://cdn.quilljs.com/1.3.6/quill.js"></script>
   <style>
     :root {
-      --bg: #080710;
-      --card-bg: rgba(17, 24, 39, 0.7);
-      --border: rgba(255, 255, 255, 0.08);
-      --text: #f9fafb;
-      --muted: #9ca3af;
-      --primary: #6366f1;
-      --primary-hover: #4f46e5;
+      --bg: #f8fafc;
+      --card-bg: #ffffff;
+      --border: #e2e8f0;
+      --text: #1e293b;
+      --muted: #64748b;
+      --primary: #467222;
+      --primary-hover: #3b601d;
       --accent: #10b981;
       --danger: #ef4444;
-      --font-sans: 'Plus Jakarta Sans', sans-serif;
+      --font-sans: 'Poppins', sans-serif;
     }
     * {
       box-sizing: border-box;
@@ -1289,12 +1598,9 @@ export default {
     }
     body {
       background-color: var(--bg);
-      background: radial-gradient(circle at 10% 20%, rgba(99, 102, 241, 0.15) 0%, transparent 40%),
-                  radial-gradient(circle at 90% 80%, rgba(16, 185, 129, 0.1) 0%, transparent 40%),
-                  var(--bg);
       color: var(--text);
       font-family: var(--font-sans);
-      padding: 60px 20px;
+      padding: 40px 20px;
       display: flex;
       justify-content: center;
       min-height: 100vh;
@@ -1309,15 +1615,13 @@ export default {
     .card {
       background: var(--card-bg);
       border: 1px solid var(--border);
-      border-radius: 20px;
-      padding: 35px;
-      box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
-      backdrop-filter: blur(16px) saturate(120%);
-      transition: border-color 0.3s ease, box-shadow 0.3s ease;
+      border-radius: 12px;
+      padding: 25px;
+      box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+      transition: all 0.3s ease;
     }
     .card:hover {
-      border-color: rgba(99, 102, 241, 0.3);
-      box-shadow: 0 10px 40px 0 rgba(99, 102, 241, 0.15);
+      box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
     }
     h1, h2, h3 {
       font-weight: 800;
@@ -1329,55 +1633,55 @@ export default {
       line-height: 1.6;
     }
     .btn {
-      background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
+      background: var(--primary);
       color: white;
       border: none;
-      padding: 14px 28px;
-      border-radius: 10px;
-      font-weight: 700;
+      padding: 10px 20px;
+      border-radius: 8px;
+      font-weight: 600;
       cursor: pointer;
       font-size: 14px;
-      box-shadow: 0 4px 15px rgba(99, 102, 241, 0.3);
-      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      box-shadow: 0 4px 6px rgba(70, 114, 34, 0.2);
+      transition: all 0.2s;
       display: inline-flex;
       align-items: center;
       justify-content: center;
       gap: 8px;
     }
     .btn:hover {
-      transform: translateY(-2px);
-      box-shadow: 0 6px 20px rgba(99, 102, 241, 0.5);
-      background: linear-gradient(135deg, #4f46e5 0%, #3730a3 100%);
+      background: var(--primary-hover);
+      transform: translateY(-1px);
+      box-shadow: 0 6px 12px rgba(70, 114, 34, 0.3);
     }
     .btn:active {
       transform: translateY(0);
     }
     .btn-secondary {
-      background: rgba(255, 255, 255, 0.05);
-      border: 1px solid rgba(255, 255, 255, 0.1);
-      color: var(--text);
+      background: #f1f5f9;
+      border: 1px solid #cbd5e1;
+      color: #334155;
       box-shadow: none;
     }
     .btn-secondary:hover {
-      background: rgba(255, 255, 255, 0.1);
-      border-color: rgba(255, 255, 255, 0.2);
-      box-shadow: 0 4px 15px rgba(255, 255, 255, 0.05);
+      background: #e2e8f0;
+      border-color: #94a3b8;
+      box-shadow: none;
     }
     .btn-danger {
-      background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
-      box-shadow: 0 4px 15px rgba(239, 68, 68, 0.25);
+      background: #ef4444;
+      box-shadow: 0 4px 6px rgba(239, 68, 68, 0.2);
     }
     .btn-danger:hover {
-      background: linear-gradient(135deg, #dc2626 0%, #b91c1c 100%);
-      box-shadow: 0 6px 20px rgba(239, 68, 68, 0.45);
+      background: #dc2626;
+      box-shadow: 0 6px 12px rgba(239, 68, 68, 0.3);
     }
     input, select, textarea {
       width: 100%;
-      padding: 14px;
-      background: rgba(31, 41, 55, 0.4);
-      border: 1px solid rgba(255, 255, 255, 0.1);
-      color: white;
-      border-radius: 10px;
+      padding: 12px;
+      background: #ffffff;
+      border: 1px solid #cbd5e1;
+      color: #1e293b;
+      border-radius: 8px;
       font-family: inherit;
       font-size: 14px;
       transition: all 0.3s ease;
@@ -1385,9 +1689,13 @@ export default {
     }
     input:focus, select:focus, textarea:focus {
       outline: none;
-      background: rgba(31, 41, 55, 0.7);
+      background: #ffffff;
       border-color: var(--primary);
-      box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.25);
+      box-shadow: 0 0 0 3px rgba(70, 114, 34, 0.2);
+    }
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
     }
     label {
       font-size: 12px;
@@ -1447,47 +1755,53 @@ export default {
       border-color: rgba(99, 102, 241, 0.3);
       box-shadow: 0 12px 24px rgba(0, 0, 0, 0.25);
     }
-    .blog-list-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-      gap: 24px;
+    .blog-table-container {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
       margin-top: 20px;
     }
-    .blog-card {
-      background: rgba(22, 30, 46, 0.4);
-      border: 1px solid rgba(255, 255, 255, 0.05);
-      border-radius: 16px;
-      overflow: hidden;
-      display: flex;
-      flex-direction: column;
-      transition: all 0.3s ease;
-    }
-    .blog-card:hover {
-      transform: translateY(-4px);
-      border-color: rgba(99, 102, 241, 0.3);
-      box-shadow: 0 12px 24px rgba(0, 0, 0, 0.25);
-    }
-    .blog-card-img {
-      height: 120px;
-      background: rgba(255, 255, 255, 0.03);
-      object-fit: cover;
+    .blog-table {
       width: 100%;
+      border-collapse: collapse;
+      text-align: left;
     }
-    .blog-card-body {
-      padding: 20px;
-      flex-grow: 1;
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
+    .blog-table th {
+      padding: 16px;
+      font-size: 13px;
+      text-transform: uppercase;
+      color: var(--muted);
+      border-bottom: 1px solid var(--border);
+      background: #f8fafc;
     }
-    .blog-card-title {
-      font-size: 15px;
-      font-weight: 700;
+    .blog-table td {
+      padding: 16px;
+      border-bottom: 1px solid var(--border);
+      color: var(--text);
+    }
+    .blog-table tr:hover td {
+      background: #f1f5f9;
+    }
+    .fab-button {
+      position: fixed;
+      bottom: 40px;
+      right: 40px;
+      padding: 15px 30px;
+      border-radius: 50px;
+      font-size: 16px;
+      box-shadow: 0 10px 25px rgba(70, 114, 34, 0.4);
+      z-index: 1000;
+      background: var(--primary);
+    }
+    .fab-button:hover {
+      box-shadow: 0 15px 35px rgba(70, 114, 34, 0.5);
+      transform: translateY(-2px);
     }
     /* Editor styling */
     .editor-block {
-      background: rgba(22, 30, 46, 0.5);
-      border: 1px solid rgba(255, 255, 255, 0.06);
+      background: #ffffff;
+      border: 1px solid var(--border);
       border-radius: 16px;
       padding: 24px;
       margin-bottom: 24px;
@@ -1526,7 +1840,7 @@ export default {
     .sitemap-item {
       display: flex;
       justify-content: space-between;
-      background: rgba(22, 30, 46, 0.5);
+      background: #ffffff;
       border: 1px solid rgba(255, 255, 255, 0.05);
       padding: 14px 20px;
       border-radius: 10px;
@@ -1565,33 +1879,42 @@ export default {
 
     <!-- MAIN DASHBOARD -->
     <div id="view-dashboard" class="tab-section">
-      <div class="card header-bar" style="margin-bottom: 20px;">
-        <div>
-          <h2>Certifyied Client Blog Engine</h2>
-          <p>Provision client website projects, write SEO-optimized stories, generate search sitemaps, and obtain CDN integration snippets.</p>
-        </div>
-        <button class="btn btn-secondary btn-danger" onclick="logout()">Log Out</button>
-      </div>
 
       <!-- PROJECTS VIEW -->
       <div id="panel-projects" class="tab-section tab-active">
         <div style="margin-bottom: 20px; display: flex; gap: 10px; justify-content: flex-end;">
           <button class="btn btn-secondary global-only" onclick="showUsersPanel()">👥 User Permissions</button>
           <button class="btn btn-secondary global-only" onclick="showAuditLogsPanel()">📜 Audit Logs</button>
+          <button class="btn btn-danger" onclick="logout()" style="font-size: 13px; padding: 6px 12px; box-shadow: none;" title="Log Out">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:4px;"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
+            Logout
+          </button>
         </div>
         
         <div class="card dev-only" style="margin-bottom: 25px;">
           <h3>Provision New Client Website Project</h3>
           <p style="margin-top: 5px; margin-bottom: 10px; font-size: 13px;">Creating a project adds a new row in your Supabase database with a unique Project ID and establishes a fast indexed query workspace to serve all its associated blogs.</p>
-          <div class="flex-group" style="margin-top: 15px;">
+          <div class="flex-group" style="margin-top: 15px; display: flex; flex-direction: column; gap: 10px;">
             <input type="text" id="new-project-name" placeholder="Client / Site Name (e.g., Acme Agency, Spark eCommerce)">
-            <button class="btn" onclick="createProject()">Create Project Row</button>
+            <input type="text" id="new-project-url" placeholder="Site URL (e.g., https://acme.com)">
+            <button class="btn" style="align-self: flex-start;" onclick="createProject()">Create Project Row</button>
           </div>
         </div>
 
         <h3 style="margin-bottom: 15px;">Your Projects</h3>
-        <div id="projects-list" class="project-grid">
-          <!-- Projects load here -->
+        <div class="blog-table-container">
+          <table class="blog-table">
+            <thead>
+              <tr>
+                <th>Project Name</th>
+                <th>Project ID</th>
+                <th style="text-align: right;">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="projects-list">
+              <!-- Projects load here -->
+            </tbody>
+          </table>
         </div>
       </div>
 
@@ -1629,7 +1952,7 @@ export default {
         <div class="card" style="padding:0; overflow:hidden; margin-bottom: 25px;">
           <table style="width:100%; border-collapse:collapse; text-align:left;">
             <thead>
-              <tr style="border-bottom:1px solid rgba(255,255,255,0.08); background:rgba(255,255,255,0.02);">
+              <tr style="border-bottom:1px solid var(--border); background:#f8fafc;">
                 <th style="padding:15px; font-size:12px; text-transform:uppercase; color:var(--muted);">Email</th>
                 <th style="padding:15px; font-size:12px; text-transform:uppercase; color:var(--muted);">Role</th>
                 <th style="padding:15px; font-size:12px; text-transform:uppercase; color:var(--muted);">Assigned Project</th>
@@ -1651,7 +1974,7 @@ export default {
         <div class="card" style="padding:0; overflow:hidden; margin-bottom: 25px;">
           <table style="width:100%; border-collapse:collapse; text-align:left;">
             <thead>
-              <tr style="border-bottom:1px solid rgba(255,255,255,0.08); background:rgba(255,255,255,0.02);">
+              <tr style="border-bottom:1px solid var(--border); background:#f8fafc;">
                 <th style="padding:15px; font-size:12px; text-transform:uppercase; color:var(--muted); width: 180px;">Timestamp</th>
                 <th style="padding:15px; font-size:12px; text-transform:uppercase; color:var(--muted); width: 200px;">Email</th>
                 <th style="padding:15px; font-size:12px; text-transform:uppercase; color:var(--muted); width: 160px;">Action</th>
@@ -1668,24 +1991,40 @@ export default {
 
       <!-- SINGLE PROJECT VIEW (Blogs & Integrations) -->
       <div id="panel-project-detail" class="tab-section">
-        <div style="margin-bottom: 20px; display: flex; gap: 10px; flex-wrap: wrap;">
+        <div style="margin-bottom: 20px; display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap;">
           <button id="btn-back-to-projects" class="btn btn-secondary" onclick="showPanel('panel-projects')">← Back to Projects</button>
-          <button class="btn" onclick="newBlog()">✍️ New Blog Story</button>
+          
           <button class="btn btn-secondary dev-only" onclick="showIntegrations()">🔌 Get CDN Embed Snippet</button>
           <button class="btn btn-secondary dev-only" onclick="showSitemaps()">🔗 Get Sitemap Links</button>
           <button class="btn btn-secondary global-only" onclick="showUsersPanel()">👥 User Permissions</button>
           <button class="btn btn-secondary global-only" onclick="showAuditLogsPanel()">📜 Audit Logs</button>
+          <button class="btn btn-danger" onclick="logout()" style="font-size: 13px; padding: 6px 12px; box-shadow: none;" title="Log Out">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:4px;"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
+            Logout
+          </button>
         </div>
 
-        <div class="card" style="margin-bottom: 25px;">
-          <h2 id="detail-project-name">Project Details</h2>
-          <p id="detail-project-id" style="font-family: monospace; font-size: 12px; margin-top: 5px; color: var(--accent);"></p>
+        <div style="margin-bottom: 25px;">
+          <h2 id="detail-project-name" style="font-size: 28px;">Project Details</h2>
+          <p id="detail-project-id" style="display: none;"></p>
         </div>
 
-        <h3 style="margin-bottom: 15px;">Published Stories</h3>
-        <div id="blogs-list" class="blog-list-grid">
-          <!-- Blogs load here -->
+        <h3 style="margin-bottom: 15px; margin-top: 20px;">Published Stories</h3>
+        <input type="text" id="search-blogs" placeholder="Search blogs by title..." onkeyup="filterBlogs()" style="max-width: 400px; margin-bottom: 15px; padding: 10px;">
+        <div class="blog-table-container">
+          <table class="blog-table">
+            <thead>
+              <tr>
+                <th>Title</th>
+                <th style="text-align: right;">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="blogs-list">
+              <!-- Blogs load here -->
+            </tbody>
+          </table>
         </div>
+        <button class="btn fab-button" onclick="newBlog()">+ Add Blog</button>
       </div>
 
       <!-- INTEGRATIONS MODAL/PANEL -->
@@ -1712,11 +2051,32 @@ export default {
       <!-- SITEMAP MODAL/PANEL -->
       <div id="panel-sitemaps" class="tab-section">
         <button class="btn btn-secondary" style="margin-bottom: 20px;" onclick="showPanel('panel-project-detail')">← Back to Blogs</button>
-        <div class="card">
-          <h3>Generate Sitemap Links</h3>
-          <p style="margin-top: 5px; margin-bottom: 15px;">Below are all public URLs generated for your blogs. Click the button to copy all links for your sitemap.xml config.</p>
+        
+        <div class="card" style="margin-bottom: 20px;">
+          <h3>Dynamic XML Sitemap</h3>
+          <p style="margin-top: 5px; margin-bottom: 15px;">Your dynamic sitemap automatically updates whenever a blog is published. Use this CDN link directly in Google Search Console.</p>
+          <label>Sitemap URL</label>
+          <div id="sitemap-cdn-url" class="snippet-box"></div>
           
-          <div id="sitemap-list" style="margin-top: 15px; display: flex; flex-direction: column; gap: 10px;">
+          <div style="display: flex; gap: 10px; margin-top: 15px;">
+            <button class="btn" onclick="copySitemapCDN()">Copy Sitemap URL</button>
+            <button class="btn btn-secondary" onclick="downloadSitemapXML()">📥 Download XML</button>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom: 20px;">
+          <h3>Add Static Link</h3>
+          <p style="margin-top: 5px; margin-bottom: 15px;">Add other pages (like /about or /services) to the sitemap manually.</p>
+          <div style="display: flex; gap: 10px;">
+            <input type="text" id="new-static-link" placeholder="Full URL (e.g. https://domain.com/about)" style="flex-grow: 1; margin: 0; padding: 12px; border-radius: 8px;">
+            <button class="btn" style="padding: 10px 20px;" onclick="addStaticLink()">Add Link</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>Raw Generated Links</h3>
+          <p style="margin-top: 5px; margin-bottom: 15px;">Below are the raw public URLs generated for your blogs.</p>
+          <div id="sitemap-list" style="margin-top: 15px; display: flex; flex-direction: column; gap: 10px; max-height: 300px; overflow-y: auto;">
             <!-- Sitemaps map here -->
           </div>
           <button class="btn" style="margin-top: 15px;" onclick="copyAllSitemaps()">Copy All URLs</button>
@@ -1772,6 +2132,39 @@ export default {
   </div>
 
   <script>
+
+    // Toast Notification Logic
+    function showToast(message, type = 'info') {
+      let container = document.getElementById('toast-container');
+      if (!container) {
+        container = document.createElement('div');
+        container.id = 'toast-container';
+        document.body.appendChild(container);
+      }
+      const toast = document.createElement('div');
+      toast.className = 'toast ' + type;
+      
+      
+      if (type === 'error' || message.toLowerCase().includes('error') || message.toLowerCase().includes('failed') || message.toLowerCase().includes('incorrect')) {
+        toast.className = 'toast error';
+      } else if (type === 'success' || message.toLowerCase().includes('success') || message.toLowerCase().includes('copied') || message.toLowerCase().includes('published')) {
+        toast.className = 'toast success';
+      }
+      
+      toast.innerHTML = '<span>' + message + '</span>';
+
+      container.appendChild(toast);
+      
+      // Trigger reflow to play animation
+      void toast.offsetWidth;
+      toast.classList.add('show');
+      
+      setTimeout(() => {
+        toast.classList.remove('show');
+        setTimeout(() => toast.remove(), 300);
+      }, 4000);
+    }
+
     const baseUrl = window.location.origin + "/adminApiBlog";
     let token = localStorage.getItem('blog_auth_token');
     let selectedProjectId = '';
@@ -1873,7 +2266,7 @@ export default {
 
     async function sendOTP() {
       const email = document.getElementById('auth-email').value;
-      if (!email) return alert("Email is required!");
+      if (!email) return showToast("Email is required!");
 
       const btn = document.querySelector('#email-step button');
       btn.disabled = true;
@@ -1893,15 +2286,15 @@ export default {
           document.getElementById('otp-step').style.display = 'block';
 
           if (data.emailFailed) {
-            alert("⚠️ OTP generated but email delivery failed. Check wrangler logs for the code, or check your Resend API key.");
+            showToast("⚠️ OTP generated but email delivery failed. Check wrangler logs for the code, or check your Resend API key.");
           } else {
-            alert("✅ OTP sent! Please check your email.");
+            showToast("✅ OTP sent! Please check your email.");
           }
         } else {
-          alert(data.error || "Failed to send OTP.");
+          showToast(data.error || "Failed to send OTP.");
         }
       } catch (e) {
-        alert("Network error: " + e.message);
+        showToast("Network error: " + e.message);
       } finally {
         btn.disabled = false;
         btn.innerText = 'Send OTP';
@@ -1911,7 +2304,7 @@ export default {
     async function verifyOTP() {
       const email = document.getElementById('auth-email').value;
       const otp = document.getElementById('auth-otp').value;
-      if (!otp) return alert("OTP is required!");
+      if (!otp) return showToast("OTP is required!");
       try {
         const res = await fetch(baseUrl + "/auth/verify-otp", {
           method: "POST",
@@ -1924,10 +2317,10 @@ export default {
           localStorage.setItem('blog_auth_token', token);
           showDashboard();
         } else {
-          alert(data.error || "Incorrect OTP.");
+          showToast(data.error || "Incorrect OTP.");
         }
       } catch (e) {
-        alert("Verification failed: " + e.message);
+        showToast("Verification failed: " + e.message);
       }
     }
 
@@ -1942,35 +2335,41 @@ export default {
         projectsCache = data.projects || [];
         renderProjects();
       } catch (e) {
-        alert("Failed to load projects: " + e.message);
+        showToast("Failed to load projects: " + e.message);
       }
     }
 
     function renderProjects() {
       const listEl = document.getElementById('projects-list');
       listEl.innerHTML = '';
+      if (projectsCache.length === 0) {
+        listEl.innerHTML = '<tr><td colspan="3" style="text-align:center;">No projects found.</td></tr>';
+        return;
+      }
       projectsCache.forEach(p => {
-        const card = document.createElement('div');
-        card.className = 'project-card';
+        const tr = document.createElement('tr');
         
-        const title = document.createElement('h4');
-        title.style.fontSize = '18px';
-        title.innerText = p.name;
+        const tdTitle = document.createElement('td');
+        tdTitle.style.fontWeight = '600';
+        tdTitle.innerText = p.name || '(Untitled Project)';
         
-        const pid = document.createElement('p');
-        pid.style.fontFamily = 'monospace';
-        pid.style.fontSize = '11px';
-        pid.style.color = 'var(--accent)';
-        pid.innerText = 'ID: ' + p.id;
+        const tdId = document.createElement('td');
+        tdId.style.fontFamily = 'monospace';
+        tdId.style.fontSize = '12px';
+        tdId.style.color = 'var(--muted)';
+        tdId.innerText = p.id;
+        
+        const tdActions = document.createElement('td');
+        tdActions.style.textAlign = 'right';
         
         const btnGroup = document.createElement('div');
-        btnGroup.style.display = 'flex';
-        btnGroup.style.gap = '10px';
-        btnGroup.style.marginTop = 'auto';
+        btnGroup.style.display = 'inline-flex';
+        btnGroup.style.gap = '8px';
         
         const manageBtn = document.createElement('button');
-        manageBtn.className = 'btn btn-secondary';
-        manageBtn.style.flex = '1';
+        manageBtn.className = 'btn';
+        manageBtn.style.padding = '6px 12px';
+        manageBtn.style.fontSize = '12px';
         manageBtn.innerText = 'Manage Blogs';
         manageBtn.onclick = () => viewProject(p.id, p.name);
         
@@ -1981,23 +2380,27 @@ export default {
         if (role === 'admin' || role === 'developer') {
           const deleteBtn = document.createElement('button');
           deleteBtn.className = 'btn btn-danger';
-          deleteBtn.style.padding = '10px';
-          deleteBtn.innerText = '🗑️';
+          deleteBtn.style.padding = '6px 12px';
+          deleteBtn.style.fontSize = '12px';
+          deleteBtn.innerText = 'Delete';
           deleteBtn.onclick = () => deleteProject(p.id);
           btnGroup.appendChild(deleteBtn);
         }
         
-        card.appendChild(title);
-        card.appendChild(pid);
-        card.appendChild(btnGroup);
+        tdActions.appendChild(btnGroup);
         
-        listEl.appendChild(card);
+        tr.appendChild(tdTitle);
+        tr.appendChild(tdId);
+        tr.appendChild(tdActions);
+        
+        listEl.appendChild(tr);
       });
     }
 
     async function createProject() {
       const name = document.getElementById('new-project-name').value;
-      if (!name) return alert("Name is required!");
+      const url = document.getElementById('new-project-url').value;
+      if (!name) return showToast("Name is required!");
       try {
         const res = await fetch(baseUrl + "/api/projects", {
           method: "POST",
@@ -2005,17 +2408,18 @@ export default {
             "Content-Type": "application/json",
             "Authorization": "Bearer " + token
           },
-          body: JSON.stringify({ name })
+          body: JSON.stringify({ name, url })
         });
         if (res.ok) {
           document.getElementById('new-project-name').value = '';
+          document.getElementById('new-project-url').value = '';
           loadProjects();
         } else {
           const data = await res.json();
-          alert(data.error);
+          showToast(data.error);
         }
       } catch (e) {
-        alert("Error adding project");
+        showToast("Error adding project");
       }
     }
 
@@ -2028,7 +2432,7 @@ export default {
         });
         if (res.ok) loadProjects();
       } catch (e) {
-        alert("Failed to delete project");
+        showToast("Failed to delete project");
       }
     }
 
@@ -2042,6 +2446,9 @@ export default {
 
     // --- BLOGS FLOW ---
     async function loadBlogs() {
+      const listEl = document.getElementById('blogs-list');
+      listEl.innerHTML = '<tr><td colspan="2" style="text-align:center; padding: 40px;"><div style="display:inline-block; border: 3px solid var(--border); border-top: 3px solid var(--primary); border-radius: 50%; width: 24px; height: 24px; animation: spin 1s linear infinite;"></div><div style="margin-top:10px; color:var(--muted); font-size:13px;">Loading stories...</div></td></tr>';
+      
       try {
         const res = await fetch(baseUrl + "/api/blogs?projectId=" + selectedProjectId, {
           headers: { "Authorization": "Bearer " + token }
@@ -2050,7 +2457,7 @@ export default {
         blogsCache = data.blogs || [];
         renderBlogs();
       } catch (e) {
-        alert("Failed to load blogs");
+        showToast("Failed to load blogs");
       }
     }
 
@@ -2058,61 +2465,57 @@ export default {
       const listEl = document.getElementById('blogs-list');
       listEl.innerHTML = '';
       if (blogsCache.length === 0) {
-        listEl.innerHTML = '<p style="grid-column:1/-1; text-align:center;">No published stories found. Click "New Blog Story" to create one!</p>';
+        listEl.innerHTML = '<tr><td colspan="2" style="text-align:center;">No published stories found. Click "+ Add Blog" to create one!</td></tr>';
         return;
       }
       blogsCache.forEach(b => {
-        const card = document.createElement('div');
-        card.className = 'blog-card';
-        const fallback = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="100%" fill="%231f2937"><rect width="100%" height="100%"/></svg>';
+        const tr = document.createElement('tr');
+        tr.className = 'blog-row';
+        tr.dataset.title = (b.title || '').toLowerCase();
         
-        const img = document.createElement('img');
-        img.className = 'blog-card-img';
-        img.src = b.main_image_url || fallback;
-        img.onerror = () => { img.src = fallback; };
+        const tdTitle = document.createElement('td');
+        tdTitle.style.fontWeight = '600';
+        tdTitle.innerText = b.title || '(Untitled)';
         
-        const body = document.createElement('div');
-        body.className = 'blog-card-body';
-        
-        const title = document.createElement('span');
-        title.className = 'blog-card-title';
-        title.innerText = b.title || '';
-        
-        const subtitle = document.createElement('span');
-        subtitle.style.fontSize = '12px';
-        subtitle.style.color = 'var(--muted)';
-        subtitle.innerText = b.subtitle || '';
+        const tdActions = document.createElement('td');
+        tdActions.style.textAlign = 'right';
         
         const btnGroup = document.createElement('div');
-        btnGroup.style.display = 'flex';
-        btnGroup.style.gap = '10px';
-        btnGroup.style.marginTop = 'auto';
-        btnGroup.style.paddingTop = '10px';
+        btnGroup.style.display = 'inline-flex';
+        btnGroup.style.gap = '8px';
         
         const editBtn = document.createElement('button');
         editBtn.className = 'btn btn-secondary';
-        editBtn.style.flex = '1';
-        editBtn.style.padding = '8px';
+        editBtn.style.padding = '6px 12px';
         editBtn.innerText = 'Edit';
         editBtn.onclick = () => editBlog(b.id);
         
         const deleteBtn = document.createElement('button');
         deleteBtn.className = 'btn btn-danger';
-        deleteBtn.style.padding = '8px';
-        deleteBtn.innerText = '🗑️';
+        deleteBtn.style.padding = '6px 12px';
+        deleteBtn.innerText = 'Delete';
         deleteBtn.onclick = () => deleteBlog(b.id);
         
         btnGroup.appendChild(editBtn);
         btnGroup.appendChild(deleteBtn);
+        tdActions.appendChild(btnGroup);
         
-        body.appendChild(title);
-        body.appendChild(subtitle);
-        body.appendChild(btnGroup);
+        tr.appendChild(tdTitle);
+        tr.appendChild(tdActions);
         
-        card.appendChild(img);
-        card.appendChild(body);
-        
-        listEl.appendChild(card);
+        listEl.appendChild(tr);
+      });
+    }
+
+    function filterBlogs() {
+      const query = document.getElementById('search-blogs').value.toLowerCase();
+      const rows = document.querySelectorAll('.blog-row');
+      rows.forEach(row => {
+        if (row.dataset.title.includes(query)) {
+          row.style.display = '';
+        } else {
+          row.style.display = 'none';
+        }
       });
     }
 
@@ -2125,7 +2528,7 @@ export default {
         });
         if (res.ok) loadBlogs();
       } catch (e) {
-        alert("Error deleting blog");
+        showToast("Error deleting blog");
       }
     }
 
@@ -2148,12 +2551,12 @@ export default {
 
     function copySnippetHome() {
       navigator.clipboard.writeText(document.getElementById('integration-snippet-home').innerText);
-      alert("Home Page snippet code copied to clipboard!");
+      showToast("Home Page snippet code copied to clipboard!");
     }
 
     function copySnippetBlog() {
       navigator.clipboard.writeText(document.getElementById('integration-snippet-blog').innerText);
-      alert("Blog Page snippet code copied to clipboard!");
+      showToast("Blog Page snippet code copied to clipboard!");
     }
 
     // --- SITEMAPS GENERATOR ---
@@ -2161,42 +2564,84 @@ export default {
       const container = document.getElementById('sitemap-list');
       container.innerHTML = '';
       
+      const cdnUrl = baseUrl + '/api/sitemap.xml?projectId=' + selectedProjectId;
+      document.getElementById('sitemap-cdn-url').innerText = cdnUrl;
+
       if (blogsCache.length === 0) {
         container.innerHTML = '<p>Publish some blogs to generate sitemap links.</p>';
-        return;
+      } else {
+        blogsCache.forEach(b => {
+          const blogUrl = baseUrl + '/blog/' + b.slug + '?project=' + selectedProjectId;
+          const div = document.createElement('div');
+          div.className = 'sitemap-item';
+          
+          const span = document.createElement('span');
+          span.style.fontFamily = 'monospace';
+          span.style.color = 'var(--accent)';
+          span.innerText = blogUrl;
+          
+          const btn = document.createElement('button');
+          btn.className = 'btn btn-secondary';
+          btn.style.padding = '6px 12px';
+          btn.style.fontSize = '12px';
+          btn.innerText = 'Copy';
+          btn.onclick = () => {
+            navigator.clipboard.writeText(blogUrl);
+            showToast('Copied link!');
+          };
+          
+          div.appendChild(span);
+          div.appendChild(btn);
+          container.appendChild(div);
+        });
       }
-      
-      blogsCache.forEach(b => {
-        const blogUrl = baseUrl + '/blog/' + b.slug + '?project=' + selectedProjectId;
-        const div = document.createElement('div');
-        div.className = 'sitemap-item';
-        
-        const span = document.createElement('span');
-        span.style.fontFamily = 'monospace';
-        span.style.color = 'var(--accent)';
-        span.innerText = blogUrl;
-        
-        const btn = document.createElement('button');
-        btn.className = 'btn btn-secondary';
-        btn.style.padding = '6px 12px';
-        btn.style.fontSize = '12px';
-        btn.innerText = 'Copy';
-        btn.onclick = () => {
-          navigator.clipboard.writeText(blogUrl);
-          alert('Copied link!');
-        };
-        
-        div.appendChild(span);
-        div.appendChild(btn);
-        container.appendChild(div);
-      });
       showPanel('panel-sitemaps');
     }
 
     function copyAllSitemaps() {
       const links = blogsCache.map(b => baseUrl + '/blog/' + b.slug + '?project=' + selectedProjectId).join('\\n');
       navigator.clipboard.writeText(links);
-      alert("All blog links copied to clipboard!");
+      showToast("All blog links copied to clipboard!");
+    }
+
+    function copySitemapCDN() {
+      const url = document.getElementById('sitemap-cdn-url').innerText;
+      navigator.clipboard.writeText(url);
+      showToast("Sitemap CDN URL copied to clipboard!");
+    }
+
+    function downloadSitemapXML() {
+      const url = document.getElementById('sitemap-cdn-url').innerText;
+      window.open(url, '_blank');
+    }
+
+    async function addStaticLink() {
+      const url = document.getElementById('new-static-link').value;
+      if (!url || !url.startsWith('http')) return showToast("Please enter a valid URL starting with http:// or https://");
+      
+      try {
+        const res = await fetch(baseUrl + "/api/sitemaps", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": "Bearer " + token
+          },
+          body: JSON.stringify({
+            project_id: selectedProjectId,
+            loc: url,
+            changefreq: 'monthly',
+            priority: 0.8
+          })
+        });
+        if (res.ok) {
+          showToast("Static link added to XML sitemap successfully!");
+          document.getElementById('new-static-link').value = '';
+        } else {
+          showToast("Failed to add link");
+        }
+      } catch (e) {
+        showToast("Error adding link");
+      }
     }
 
     // --- SYSTEM AUDIT LOGS DISPLAY ---
@@ -2214,7 +2659,7 @@ export default {
         const logs = data.logs || [];
         renderAuditLogs(logs);
       } catch (e) {
-        alert("Failed to load audit logs: " + e.message);
+        showToast("Failed to load audit logs: " + e.message);
       }
     }
 
@@ -2287,7 +2732,7 @@ export default {
         const users = data.users || [];
         renderUsers(users);
       } catch (e) {
-        alert("Failed to load users: " + e.message);
+        showToast("Failed to load users: " + e.message);
       }
     }
 
@@ -2344,7 +2789,7 @@ export default {
       const email = document.getElementById('new-user-email').value;
       const role = document.getElementById('new-user-role').value;
       const project_id = document.getElementById('new-user-project').value;
-      if (!email) return alert("Email is required!");
+      if (!email) return showToast("Email is required!");
       try {
         const res = await fetch(baseUrl + "/api/users", {
           method: "POST",
@@ -2359,10 +2804,10 @@ export default {
           loadUsers();
         } else {
           const data = await res.json();
-          alert(data.error);
+          showToast(data.error);
         }
       } catch (e) {
-        alert("Error adding user");
+        showToast("Error adding user");
       }
     }
 
@@ -2375,7 +2820,7 @@ export default {
         });
         if (res.ok) loadUsers();
       } catch (e) {
-        alert("Failed to delete user");
+        showToast("Failed to delete user");
       }
     }
 
@@ -2535,9 +2980,9 @@ export default {
         if (!res.ok) throw new Error("Upload request failed.");
         const data = await res.json();
         document.getElementById(targetInputId).value = data.url;
-        alert("Image uploaded to R2 successfully!");
+        showToast("Image uploaded to R2 successfully!");
       } catch (err) {
-        alert("Upload failed: " + err.message);
+        showToast("Upload failed: " + err.message);
       } finally {
         btn.innerText = originalText;
         btn.disabled = false;
@@ -2552,7 +2997,7 @@ export default {
       const subtitle = document.getElementById('blog-subtitle').value;
       const main_image_url = document.getElementById('blog-cover-url').value;
 
-      if (!title) return alert("Blog Title is required!");
+      if (!title) return showToast("Blog Title is required!");
 
       const paragraphs = [];
       document.querySelectorAll('.editor-block').forEach(el => {
@@ -2595,15 +3040,15 @@ export default {
         });
 
         if (res.ok) {
-          alert("Story published successfully!");
+          showToast("Story published successfully!");
           showPanel('panel-project-detail');
           loadBlogs();
         } else {
           const data = await res.json();
-          alert("Failed to save: " + data.error);
+          showToast("Failed to save: " + data.error);
         }
       } catch (err) {
-        alert("Network error: " + err.message);
+        showToast("Network error: " + err.message);
       }
     }
   </script>
@@ -2641,7 +3086,7 @@ async function sendOTPEmail(env, email, otp) {
       'Authorization': `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
-      from: 'Certifyied Blog Portal <onboarding@resend.dev>',
+      from: 'Certifyied Blog Portal <no-reply@send.certifyied.com>',
       to: [email],
       subject: 'Your Certifyied Login OTP',
       html: `<div style="font-family:sans-serif;background:#0b0f19;color:#f9fafb;padding:40px;border-radius:12px;max-width:500px;margin:auto;border:1px solid #1f2937;">
