@@ -2096,7 +2096,11 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
     // Resolve logo image from parent origin query parameter dynamically
     const logoEl = document.getElementById('logo-img');
     if (logoEl) {
-      logoEl.src = parentOrigin + '/image.png';
+      let logoSrc = parentOrigin + '/image.png';
+      if (parentOrigin.includes('localhost') || parentOrigin.includes('127.0.0.1')) {
+        logoSrc = 'https://certifyied.com/image.png';
+      }
+      logoEl.src = logoSrc;
     }
 
     if (magicToken) {
