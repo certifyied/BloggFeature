@@ -245,7 +245,7 @@ export async function handleAuthRequest(request, env, ctx, path, method, supabas
         role, 
         projectId, 
         clientId,
-        isClientPortal
+        isClientPortal: isClientReviewsPortal
       });
 
       const magicLink = `${redirectUrl}?magic_token=${magicToken}`;
