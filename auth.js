@@ -125,7 +125,7 @@ export async function handleAuthRequest(request, env, ctx, path, method, supabas
   // POST Send Magic Link
   if (path === '/adminApiBlog/auth/send-magic-link' && method === 'POST') {
     try {
-      const { email, redirectUrl } = await request.json();
+      const { email, redirectUrl, portalType } = await request.json();
       if (!email || !redirectUrl) {
         return new Response(JSON.stringify({ error: "Email and redirectUrl are required." }), { 
           status: 400, 
@@ -133,8 +133,8 @@ export async function handleAuthRequest(request, env, ctx, path, method, supabas
         });
       }
 
-      const isClientReviewsPortal = redirectUrl.includes('clientReview');
-      const isReviewsAdminPortal = redirectUrl.includes('reviewdash') || redirectUrl.includes('reviews.');
+      const isClientReviewsPortal = portalType === 'client_reviews' || redirectUrl.includes('clientReview');
+      const isReviewsAdminPortal = portalType === 'admin_reviews' || redirectUrl.includes('reviewdash') || redirectUrl.includes('reviews.');
       
       let isAuthorized = false;
       let role = 'client';

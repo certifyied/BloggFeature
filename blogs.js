@@ -2150,7 +2150,7 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
         const res = await fetch(baseUrl + "/auth/send-magic-link", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email: email.trim(), redirectUrl })
+          body: JSON.stringify({ email: email.trim(), redirectUrl, portalType: 'blog_admin' })
         });
         const data = await res.json();
 
