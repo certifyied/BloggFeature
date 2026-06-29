@@ -133,13 +133,16 @@ export async function handleAuthRequest(request, env, ctx, path, method, supabas
         });
       }
 
-      const isClientPortal = redirectUrl.includes('clientReview');
+      const isClientReviewsPortal = redirectUrl.includes('clientReview');
+      const isReviewsAdminPortal = redirectUrl.includes('reviewdash') || redirectUrl.includes('reviews.');
+      
       let isAuthorized = false;
       let role = 'client';
       let projectId = null;
       let clientId = null;
 
-      if (isClientPortal) {
+      if (isClientReviewsPortal) {
+        // --- 1. CLIENT REVIEWS PORTAL LOGIN ---
         // Fetch client from review_clients directly
         try {
           const { data: clientUser } = await supabaseAdmin
@@ -157,8 +160,34 @@ export async function handleAuthRequest(request, env, ctx, path, method, supabas
         } catch (e) {
           console.error("review_clients lookup failed:", e.message);
         }
+      } else if (isReviewsAdminPortal) {
+        // --- 2. REVIEWS ADMIN DASHBOARD LOGIN ---
+        // Only allow admins from the admins table (or global fallback email)
+        try {
+          const { data: adminUser } = await supabaseAdmin
+            .from('admins')
+            .select('role, project_id')
+            .eq('email', email.toLowerCase())
+            .maybeSingle();
+
+          if (adminUser && (adminUser.role === 'admin' || adminUser.role === 'global')) {
+            isAuthorized = true;
+            role = adminUser.role;
+            projectId = adminUser.project_id;
+          }
+        } catch (e) {
+          console.error("Admins lookup failed for reviewdash:", e.message);
+        }
+
+        // Check if global email fallback
+        if (!isAuthorized && email.toLowerCase() === (env.ADMIN_EMAIL || '').toLowerCase()) {
+          isAuthorized = true;
+          role = 'admin';
+        }
       } else {
-        // Standard admin portal lookup
+        // --- 3. BLOG ADMIN PORTAL LOGIN ---
+        // Allow admins (admin, global, blogger) and project-level clients (blogger / client)
+        
         // 1. Check if admin in admins table
         try {
           const { data: adminUser } = await supabaseAdmin
@@ -171,18 +200,9 @@ export async function handleAuthRequest(request, env, ctx, path, method, supabas
             isAuthorized = true;
             role = adminUser.role || 'blogger';
             projectId = adminUser.project_id;
-
-            if (role === 'client') {
-              const { data: clientUser } = await supabaseAdmin
-                .from('review_clients')
-                .select('id')
-                .eq('email', email.toLowerCase())
-                .maybeSingle();
-              if (clientUser) clientId = clientUser.id;
-            }
           }
         } catch (e) {
-          console.error("Admins lookup failed:", e.message);
+          console.error("Admins lookup failed for Blog Admin:", e.message);
         }
 
         // 2. Check if global email fallback
@@ -191,7 +211,7 @@ export async function handleAuthRequest(request, env, ctx, path, method, supabas
           role = 'admin';
         }
 
-        // 3. Check if email is in projects table as contact_email
+        // 3. Check if email is in projects table as contact_email (client blog management)
         if (!isAuthorized) {
           try {
             const { data: projectUser } = await supabaseAdmin
