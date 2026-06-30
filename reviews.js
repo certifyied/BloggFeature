@@ -34,13 +34,37 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
         });
       }
 
-      const { data: client, error } = await supabaseAdmin
+      let client = null;
+      let clientErr = null;
+      
+      const resQuery = await supabaseAdmin
         .from('review_clients')
-        .select('name, google_review_link')
+        .select('name, google_review_link, copy_mode')
         .eq('id', clientId)
         .maybeSingle();
 
-      if (error || !client) {
+      if (resQuery.error) {
+        console.warn("⚠️ Column fetch failed in public/client (schema migration pending), executing fallback query.");
+        const fallbackQuery = await supabaseAdmin
+          .from('review_clients')
+          .select('name, google_review_link')
+          .eq('id', clientId)
+          .maybeSingle();
+          
+        if (fallbackQuery.error) {
+          clientErr = fallbackQuery.error;
+        } else {
+          client = fallbackQuery.data;
+          client.copy_mode = 'auto';
+        }
+      } else {
+        client = resQuery.data;
+        if (client && !client.copy_mode) {
+          client.copy_mode = 'auto';
+        }
+      }
+
+      if (clientErr || !client) {
         return new Response(JSON.stringify({ error: "Client not found." }), { 
           status: 404, 
           headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
@@ -77,7 +101,7 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
       
       const resQuery = await supabaseAdmin
         .from('review_clients')
-        .select('name, google_review_link, ai_keywords, suggestion_type, custom_suggestions')
+        .select('name, google_review_link, ai_keywords, suggestion_type, custom_suggestions, copy_mode')
         .eq('id', clientId)
         .maybeSingle();
 
@@ -95,9 +119,13 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
           client = fallbackQuery.data;
           client.suggestion_type = 'ai';
           client.custom_suggestions = [];
+          client.copy_mode = 'auto';
         }
       } else {
         client = resQuery.data;
+        if (client && !client.copy_mode) {
+          client.copy_mode = 'auto';
+        }
       }
 
       if (clientErr || !client) {
@@ -205,7 +233,8 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
         success: true,
         action: 'review_facilitation',
         examples,
-        google_review_link: client.google_review_link
+        google_review_link: client.google_review_link,
+        copy_mode: client.copy_mode || 'auto'
       }), { 
         status: 200, 
         headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
