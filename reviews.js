@@ -1,3 +1,21 @@
+function generateLocalSuggestions(businessName, keywordsStr) {
+  const keywords = (keywordsStr || '')
+    .split(',')
+    .map(k => k.trim())
+    .filter(Boolean);
+    
+  const defaultKeywords = ['excellent service', 'friendly staff', 'great quality'];
+  const k1 = keywords[0] || defaultKeywords[0];
+  const k2 = keywords[1] || defaultKeywords[1];
+  const k3 = keywords[2] || keywords[0] || defaultKeywords[2];
+
+  return [
+    `Outstanding service at ${businessName}! The team is extremely professional and they offer ${k1}. Had a very smooth experience.`,
+    `I highly recommend ${businessName}! They have ${k2} and the overall quality is top-notch. Very satisfied with my experience.`,
+    `Great attention to detail and ${k3}. ${businessName} is my go-to place now, thank you for the amazing support!`
+  ];
+}
+
 // Router handler for reviews endpoints
 export async function handleReviewRequest(request, env, ctx, path, method, url, payload, supabaseAdmin, corsHeaders, logAction) {
   
@@ -54,11 +72,33 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
       }
 
       // Retrieve client review info
-      const { data: client, error: clientErr } = await supabaseAdmin
+      let client = null;
+      let clientErr = null;
+      
+      const resQuery = await supabaseAdmin
         .from('review_clients')
         .select('name, google_review_link, ai_keywords, suggestion_type, custom_suggestions')
         .eq('id', clientId)
         .maybeSingle();
+
+      if (resQuery.error) {
+        console.warn("⚠️ Column fetch failed (schema migration pending), executing fallback query.");
+        const fallbackQuery = await supabaseAdmin
+          .from('review_clients')
+          .select('name, google_review_link, ai_keywords')
+          .eq('id', clientId)
+          .maybeSingle();
+          
+        if (fallbackQuery.error) {
+          clientErr = fallbackQuery.error;
+        } else {
+          client = fallbackQuery.data;
+          client.suggestion_type = 'ai';
+          client.custom_suggestions = [];
+        }
+      } else {
+        client = resQuery.data;
+      }
 
       if (clientErr || !client) {
         return new Response(JSON.stringify({ error: "Client profile not found." }), { 
@@ -112,45 +152,52 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
 
       if (suggestionType === 'custom' && customSuggestions.length > 0) {
         examples = customSuggestions;
-      } else if (suggestionType === 'ai' && env.OPENROUTER_API_KEY) {
-        // Call OpenRouter API if API key exists
-        try {
-          const systemPrompt = `You are an AI assistant helping a customer write a genuine, positive Google review for a business named "${client.name}". The business has specified these keywords to emphasize: ${client.ai_keywords || 'excellent service'}. Generate exactly 3 to 4 distinct, natural-sounding, positive (5-star) review variations (2 to 4 sentences each) that naturally weave in the business name "${client.name}" and some of these keywords. Make them feel written by different human customers (varying style, length, and tone). Respond ONLY with a valid JSON object containing an array of strings in the key "reviews". Example: {"reviews": ["variation 1", "variation 2", "variation 3"]}`;
+      } else if (suggestionType === 'ai') {
+        if (env.OPENROUTER_API_KEY) {
+          // Call OpenRouter API if API key exists
+          try {
+            const systemPrompt = `You are an AI assistant helping a customer write a genuine, positive Google review for a business named "${client.name}". The business has specified these keywords to emphasize: ${client.ai_keywords || 'excellent service'}. Generate exactly 3 to 4 distinct, natural-sounding, positive (5-star) review variations (2 to 4 sentences each) that naturally weave in the business name "${client.name}" and some of these keywords. Make them feel written by different human customers (varying style, length, and tone). Respond ONLY with a valid JSON object containing an array of strings in the key "reviews". Example: {"reviews": ["variation 1", "variation 2", "variation 3"]}`;
 
-          const aiRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${env.OPENROUTER_API_KEY}`,
-              'HTTP-Referer': 'https://certifyied.com',
-              'X-Title': 'Certifyied Review Funnel'
-            },
-            body: JSON.stringify({
-              model: 'google/gemini-2.5-flash',
-              messages: [
-                { role: 'system', content: systemPrompt },
-                { role: 'user', content: `Generate positive reviews utilizing keywords: ${client.ai_keywords}` }
-              ],
-              response_format: { type: 'json_object' }
-            })
-          });
+            const aiRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${env.OPENROUTER_API_KEY}`,
+                'HTTP-Referer': 'https://certifyied.com',
+                'X-Title': 'Certifyied Review Funnel'
+              },
+              body: JSON.stringify({
+                model: 'google/gemini-2.5-flash',
+                messages: [
+                  { role: 'system', content: systemPrompt },
+                  { role: 'user', content: `Generate positive reviews utilizing keywords: ${client.ai_keywords}` }
+                ],
+                response_format: { type: 'json_object' }
+              })
+            });
 
-          if (aiRes.ok) {
-            const aiData = await aiRes.json();
-            const responseText = aiData.choices?.[0]?.message?.content;
-            if (responseText) {
-              const parsed = JSON.parse(responseText);
-              if (parsed.reviews && Array.isArray(parsed.reviews)) {
-                examples = parsed.reviews;
-              } else if (parsed.examples && Array.isArray(parsed.examples)) {
-                examples = parsed.examples;
-              } else if (Array.isArray(parsed)) {
-                examples = parsed;
+            if (aiRes.ok) {
+              const aiData = await aiRes.json();
+              const responseText = aiData.choices?.[0]?.message?.content;
+              if (responseText) {
+                const parsed = JSON.parse(responseText);
+                if (parsed.reviews && Array.isArray(parsed.reviews)) {
+                  examples = parsed.reviews;
+                } else if (parsed.examples && Array.isArray(parsed.examples)) {
+                  examples = parsed.examples;
+                } else if (Array.isArray(parsed)) {
+                  examples = parsed;
+                }
               }
             }
+          } catch (aiErr) {
+            console.error("OpenRouter integration error:", aiErr);
+            // Fallback to local keyword suggestions on API error
+            examples = generateLocalSuggestions(client.name, client.ai_keywords);
           }
-        } catch (aiErr) {
-          console.error("OpenRouter integration error:", aiErr);
+        } else {
+          // If no API key is set up, dynamically generate customized keyword variations locally (zero cost)
+          examples = generateLocalSuggestions(client.name, client.ai_keywords);
         }
       }
 
