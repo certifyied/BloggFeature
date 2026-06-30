@@ -307,7 +307,7 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
     // POST Create Client
     if (method === 'POST') {
       try {
-        const { project_id, name, email, google_review_link, ai_keywords, suggestion_type, custom_suggestions } = await request.json();
+        const { project_id, name, email, google_review_link, ai_keywords, suggestion_type, custom_suggestions, copy_mode } = await request.json();
 
         if (!project_id || !name || !email || !google_review_link) {
           return new Response(JSON.stringify({ error: "Missing required fields (project_id, name, email, google_review_link)." }), { 
@@ -373,7 +373,8 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
             google_review_link,
             ai_keywords: ai_keywords || '',
             suggestion_type: suggestion_type || 'ai',
-            custom_suggestions: custom_suggestions || []
+            custom_suggestions: custom_suggestions || [],
+            copy_mode: copy_mode || 'auto'
           })
           .select()
           .single();
@@ -402,7 +403,7 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
     // PUT Update Client
     if (method === 'PUT') {
       try {
-        const { id, name, email, google_review_link, ai_keywords, suggestion_type, custom_suggestions } = await request.json();
+        const { id, name, email, google_review_link, ai_keywords, suggestion_type, custom_suggestions, copy_mode } = await request.json();
 
         if (!id) {
           return new Response(JSON.stringify({ error: "Client id is required." }), { 
@@ -419,7 +420,8 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
             google_review_link,
             ai_keywords,
             suggestion_type,
-            custom_suggestions
+            custom_suggestions,
+            copy_mode: copy_mode || 'auto'
           })
           .eq('id', id)
           .select()
