@@ -56,7 +56,7 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
       // Retrieve client review info
       const { data: client, error: clientErr } = await supabaseAdmin
         .from('review_clients')
-        .select('name, google_review_link, ai_keywords')
+        .select('name, google_review_link, ai_keywords, suggestion_type, custom_suggestions')
         .eq('id', clientId)
         .maybeSingle();
 
@@ -100,15 +100,20 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
         });
       }
 
-      // Case B: Rating is 4 or 5 - AI Suggested positive reviews
+      // Case B: Rating is 4 or 5 - Predefined suggestions or AI-generated
       let examples = [
         `Outstanding service and very friendly staff at ${client.name}! Had a really smooth experience and would highly recommend to others.`,
         `Extremely professional, clean atmosphere, and super fast customer support. Very pleased with my experience with ${client.name}!`,
         `Great quality and attention to detail. ${client.name} is my go-to place now, thanks for the amazing work!`
       ];
 
-      // Call OpenRouter API if API key exists
-      if (env.OPENROUTER_API_KEY) {
+      const suggestionType = client.suggestion_type || 'ai';
+      const customSuggestions = Array.isArray(client.custom_suggestions) ? client.custom_suggestions : [];
+
+      if (suggestionType === 'custom' && customSuggestions.length > 0) {
+        examples = customSuggestions;
+      } else if (suggestionType === 'ai' && env.OPENROUTER_API_KEY) {
+        // Call OpenRouter API if API key exists
         try {
           const systemPrompt = `You are an AI assistant helping a customer write a genuine, positive Google review for a business named "${client.name}". The business has specified these keywords to emphasize: ${client.ai_keywords || 'excellent service'}. Generate exactly 3 to 4 distinct, natural-sounding, positive (5-star) review variations (2 to 4 sentences each) that naturally weave in the business name "${client.name}" and some of these keywords. Make them feel written by different human customers (varying style, length, and tone). Respond ONLY with a valid JSON object containing an array of strings in the key "reviews". Example: {"reviews": ["variation 1", "variation 2", "variation 3"]}`;
 
@@ -226,10 +231,10 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
     // POST Create Client
     if (method === 'POST') {
       try {
-        const { project_id, name, email, google_review_link, ai_keywords } = await request.json();
+        const { project_id, name, email, google_review_link, ai_keywords, suggestion_type, custom_suggestions } = await request.json();
 
-        if (!project_id || !name || !email || !google_review_link || !ai_keywords) {
-          return new Response(JSON.stringify({ error: "Missing required fields (project_id, name, email, google_review_link, ai_keywords)." }), { 
+        if (!project_id || !name || !email || !google_review_link) {
+          return new Response(JSON.stringify({ error: "Missing required fields (project_id, name, email, google_review_link)." }), { 
             status: 400, 
             headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
           });
@@ -290,7 +295,9 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
             name,
             email: email.toLowerCase(),
             google_review_link,
-            ai_keywords
+            ai_keywords: ai_keywords || '',
+            suggestion_type: suggestion_type || 'ai',
+            custom_suggestions: custom_suggestions || []
           })
           .select()
           .single();
@@ -319,7 +326,7 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
     // PUT Update Client
     if (method === 'PUT') {
       try {
-        const { id, name, email, google_review_link, ai_keywords } = await request.json();
+        const { id, name, email, google_review_link, ai_keywords, suggestion_type, custom_suggestions } = await request.json();
 
         if (!id) {
           return new Response(JSON.stringify({ error: "Client id is required." }), { 
@@ -334,7 +341,9 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
             name,
             email: email ? email.toLowerCase() : undefined,
             google_review_link,
-            ai_keywords
+            ai_keywords,
+            suggestion_type,
+            custom_suggestions
           })
           .eq('id', id)
           .select()
