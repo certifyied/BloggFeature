@@ -585,11 +585,34 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
       }
 
       // Fetch client profile
-      const { data: client, error: clientErr } = await supabaseAdmin
+      let client = null;
+      let clientErr = null;
+      
+      const resQuery = await supabaseAdmin
         .from('review_clients')
         .select('name, email, google_review_link, ai_keywords, logo_url')
         .eq('id', clientId)
         .maybeSingle();
+
+      if (resQuery.error) {
+        console.warn("⚠️ Column fetch failed in client/dashboard (schema migration pending), executing fallback query.");
+        const fallbackQuery = await supabaseAdmin
+          .from('review_clients')
+          .select('name, email, google_review_link, ai_keywords')
+          .eq('id', clientId)
+          .maybeSingle();
+          
+        if (fallbackQuery.error) {
+          clientErr = fallbackQuery.error;
+        } else {
+          client = fallbackQuery.data;
+          if (client) {
+            client.logo_url = null;
+          }
+        }
+      } else {
+        client = resQuery.data;
+      }
 
       if (clientErr || !client) {
         return new Response(JSON.stringify({ error: "Client profile not found." }), { 
