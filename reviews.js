@@ -39,7 +39,7 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
       
       const resQuery = await supabaseAdmin
         .from('review_clients')
-        .select('name, google_review_link, copy_mode')
+        .select('name, google_review_link, copy_mode, logo_url')
         .eq('id', clientId)
         .maybeSingle();
 
@@ -56,6 +56,7 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
         } else {
           client = fallbackQuery.data;
           client.copy_mode = 'auto';
+          client.logo_url = null;
         }
       } else {
         client = resQuery.data;
@@ -263,6 +264,57 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
   // ==========================================
   const isAdmin = payload.role === 'admin' || payload.role === 'global';
 
+  if (path === '/adminApiBlog/api/reviews/clients/upload-logo' && method === 'POST') {
+    if (!isAdmin) {
+      return new Response(JSON.stringify({ error: "Forbidden. Admin privileges required." }), { 
+        status: 403, 
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+      });
+    }
+
+    try {
+      const formData = await request.formData();
+      const file = formData.get('logo');
+      if (!file) {
+        return new Response(JSON.stringify({ error: "No logo file provided." }), { 
+          status: 400, 
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+        });
+      }
+
+      // Upload to Supabase Storage
+      const fileName = `${Date.now()}_${file.name || 'logo.png'}`;
+      const fileBuffer = await file.arrayBuffer();
+
+      const uploadUrl = `${env.SUPABASE_URL}/storage/v1/object/client-logos/${fileName}`;
+      const uploadRes = await fetch(uploadUrl, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}`,
+          'Content-Type': file.type || 'image/png'
+        },
+        body: fileBuffer
+      });
+
+      if (!uploadRes.ok) {
+        const errText = await uploadRes.text();
+        throw new Error(`Failed to upload to Supabase Storage: ${errText}`);
+      }
+
+      const publicUrl = `${env.SUPABASE_URL}/storage/v1/object/public/client-logos/${fileName}`;
+
+      return new Response(JSON.stringify({ logoUrl: publicUrl }), { 
+        status: 200, 
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+      });
+    } catch (err) {
+      return new Response(JSON.stringify({ error: err.message }), { 
+        status: 500, 
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+      });
+    }
+  }
+
   if (path === '/adminApiBlog/api/reviews/clients') {
     if (!isAdmin) {
       return new Response(JSON.stringify({ error: "Forbidden. Admin privileges required." }), { 
@@ -307,7 +359,7 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
     // POST Create Client
     if (method === 'POST') {
       try {
-        const { project_id, name, email, google_review_link, ai_keywords, suggestion_type, custom_suggestions, copy_mode } = await request.json();
+        const { project_id, name, email, google_review_link, ai_keywords, suggestion_type, custom_suggestions, copy_mode, logo_url } = await request.json();
 
         if (!project_id || !name || !email || !google_review_link) {
           return new Response(JSON.stringify({ error: "Missing required fields (project_id, name, email, google_review_link)." }), { 
@@ -374,7 +426,8 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
             ai_keywords: ai_keywords || '',
             suggestion_type: suggestion_type || 'ai',
             custom_suggestions: custom_suggestions || [],
-            copy_mode: copy_mode || 'auto'
+            copy_mode: copy_mode || 'auto',
+            logo_url: logo_url || null
           })
           .select()
           .single();
@@ -403,7 +456,7 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
     // PUT Update Client
     if (method === 'PUT') {
       try {
-        const { id, name, email, google_review_link, ai_keywords, suggestion_type, custom_suggestions, copy_mode } = await request.json();
+        const { id, name, email, google_review_link, ai_keywords, suggestion_type, custom_suggestions, copy_mode, logo_url } = await request.json();
 
         if (!id) {
           return new Response(JSON.stringify({ error: "Client id is required." }), { 
@@ -421,7 +474,8 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
             ai_keywords,
             suggestion_type,
             custom_suggestions,
-            copy_mode: copy_mode || 'auto'
+            copy_mode: copy_mode || 'auto',
+            logo_url
           })
           .eq('id', id)
           .select()
@@ -533,7 +587,7 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
       // Fetch client profile
       const { data: client, error: clientErr } = await supabaseAdmin
         .from('review_clients')
-        .select('name, email, google_review_link, ai_keywords')
+        .select('name, email, google_review_link, ai_keywords, logo_url')
         .eq('id', clientId)
         .maybeSingle();
 
