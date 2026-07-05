@@ -708,7 +708,7 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
       
       const resQuery = await supabaseAdmin
         .from('review_clients')
-        .select('name, email, google_review_link, ai_keywords, logo_url')
+        .select('name, email, google_review_link, ai_keywords, suggestion_type, custom_suggestions, copy_mode, logo_url')
         .eq('id', clientId)
         .maybeSingle();
 
@@ -716,7 +716,7 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
         console.warn("⚠️ Column fetch failed in client/dashboard (schema migration pending), executing fallback query.");
         const fallbackQuery = await supabaseAdmin
           .from('review_clients')
-          .select('name, email, google_review_link, ai_keywords')
+          .select('name, email, google_review_link, ai_keywords, suggestion_type, custom_suggestions, copy_mode')
           .eq('id', clientId)
           .maybeSingle();
           
