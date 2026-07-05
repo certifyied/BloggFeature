@@ -102,7 +102,7 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
       
       const resQuery = await supabaseAdmin
         .from('review_clients')
-        .select('name, google_review_link, ai_keywords, suggestion_type, custom_suggestions, copy_mode')
+        .select('name, email, google_review_link, ai_keywords, suggestion_type, custom_suggestions, copy_mode')
         .eq('id', clientId)
         .maybeSingle();
 
@@ -110,7 +110,7 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
         console.warn("⚠️ Column fetch failed (schema migration pending), executing fallback query.");
         const fallbackQuery = await supabaseAdmin
           .from('review_clients')
-          .select('name, google_review_link, ai_keywords')
+          .select('name, email, google_review_link, ai_keywords')
           .eq('id', clientId)
           .maybeSingle();
           
@@ -159,6 +159,72 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
 
       // Case A: Rating is 3 or below - Save internally, return thank you
       if (rating <= 3) {
+        if (!draft && client.email) {
+          try {
+            const apiKey = env.RESEND_API_KEY;
+            if (apiKey) {
+              await fetch('https://api.resend.com/emails', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${apiKey}`,
+                },
+                body: JSON.stringify({
+                  from: 'Review Manager <no-reply@send.certifyied.com>',
+                  to: [client.email],
+                  subject: `⚠️ Alert: New Negative Feedback Received for ${client.name}`,
+                  html: `
+                    <div style="font-family: sans-serif; max-width: 600px; margin: auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 12px; background-color: #ffffff; color: #334155;">
+                      <h2 style="color: #ef4444; font-weight: 700; margin-top: 0; margin-bottom: 16px;">New Negative Feedback Alert</h2>
+                      <p style="font-size: 15px; line-height: 1.6;">
+                        Hello <strong>${client.name}</strong>,
+                      </p>
+                      <p style="font-size: 15px; line-height: 1.6;">
+                        A customer has submitted a low rating (<strong>${rating} out of 5 stars</strong>) on your feedback funnel. Since this rating was 3 stars or below, we intercepted it and saved it internally so you can follow up with them directly.
+                      </p>
+                      
+                      <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px; margin: 24px 0;">
+                        <h4 style="margin: 0 0 12px; color: #1e293b; font-size: 14px; text-transform: uppercase; letter-spacing: 0.5px;">Feedback Details</h4>
+                        <table style="width: 100%; border-collapse: collapse; font-size: 14px; color: #475569;">
+                          <tr>
+                            <td style="padding: 4px 0; font-weight: 600; width: 120px;">Customer Name:</td>
+                            <td style="padding: 4px 0;">${reviewer_name || 'Anonymous'}</td>
+                          </tr>
+                          <tr>
+                            <td style="padding: 4px 0; font-weight: 600;">Customer Email:</td>
+                            <td style="padding: 4px 0;">${reviewer_email || 'Not provided'}</td>
+                          </tr>
+                          <tr>
+                            <td style="padding: 4px 0; font-weight: 600;">Rating:</td>
+                            <td style="padding: 4px 0; color: #f59e0b;">${'★'.repeat(rating)}${'☆'.repeat(5 - rating)} (${rating}/5)</td>
+                          </tr>
+                          ${comment ? `
+                          <tr>
+                            <td style="padding: 8px 0 4px; font-weight: 600; vertical-align: top;">Comment:</td>
+                            <td style="padding: 8px 0 4px; font-style: italic; color: #334155; line-height: 1.5;">"${comment}"</td>
+                          </tr>
+                          ` : ''}
+                        </table>
+                      </div>
+
+                      <p style="font-size: 15px; line-height: 1.6;">
+                        We recommend reaching out to this customer as soon as possible to resolve their concerns and prevent any negative public reviews.
+                      </p>
+
+                      <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 24px 0;" />
+                      <p style="color: #94a3b8; font-size: 12px; text-align: center; margin: 0;">
+                        This is an automated notification from Review Manager.
+                      </p>
+                    </div>
+                  `,
+                }),
+              });
+            }
+          } catch (e) {
+            console.error("Failed to send bad review email notification:", e);
+          }
+        }
+
         return new Response(JSON.stringify({
           success: true,
           action: 'feedback_saved',
@@ -249,6 +315,42 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
     }
   }
 
+  // GET Resolve Slug (Public)
+  if (path === '/adminApiBlog/api/reviews/public/slug' && method === 'GET') {
+    try {
+      const slug = url.searchParams.get('slug');
+      if (!slug) {
+        return new Response(JSON.stringify({ error: "slug parameter is required." }), { 
+          status: 400, 
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+        });
+      }
+
+      const { data, error } = await supabaseAdmin
+        .from('review_slugs')
+        .select('client_id')
+        .eq('slug', slug.toLowerCase().trim())
+        .maybeSingle();
+
+      if (error || !data) {
+        return new Response(JSON.stringify({ error: "Short link not found." }), { 
+          status: 404, 
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+        });
+      }
+
+      return new Response(JSON.stringify({ clientId: data.client_id }), { 
+        status: 200, 
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+      });
+    } catch (err) {
+      return new Response(JSON.stringify({ error: err.message }), { 
+        status: 500, 
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+      });
+    }
+  }
+
   // ==========================================
   // SECURE ROUTES ENFORCING AUTH CHECK
   // ==========================================
@@ -265,8 +367,9 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
   const isAdmin = payload.role === 'admin' || payload.role === 'global';
 
   if (path === '/adminApiBlog/api/reviews/clients/upload-logo' && method === 'POST') {
-    if (!isAdmin) {
-      return new Response(JSON.stringify({ error: "Forbidden. Admin privileges required." }), { 
+    const isAllowed = isAdmin || payload.role === 'client';
+    if (!isAllowed) {
+      return new Response(JSON.stringify({ error: "Forbidden. Access denied." }), { 
         status: 403, 
         headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
       });
@@ -316,7 +419,8 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
   }
 
   if (path === '/adminApiBlog/api/reviews/clients') {
-    if (!isAdmin) {
+    const isClientPut = method === 'PUT' && payload.role === 'client';
+    if (!isAdmin && !isClientPut) {
       return new Response(JSON.stringify({ error: "Forbidden. Admin privileges required." }), { 
         status: 403, 
         headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
@@ -465,18 +569,32 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
           });
         }
 
+        if (payload.role === 'client' && payload.clientId !== id) {
+          return new Response(JSON.stringify({ error: "Forbidden. You can only update your own organizational settings." }), { 
+            status: 403, 
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+          });
+        }
+
+        const updateFields = {
+          google_review_link,
+          ai_keywords,
+          suggestion_type,
+          custom_suggestions,
+          copy_mode: copy_mode || 'auto',
+          logo_url
+        };
+
+        if (isAdmin) {
+          updateFields.name = name;
+          if (email) {
+            updateFields.email = email.toLowerCase();
+          }
+        }
+
         const { data, error } = await supabaseAdmin
           .from('review_clients')
-          .update({
-            name,
-            email: email ? email.toLowerCase() : undefined,
-            google_review_link,
-            ai_keywords,
-            suggestion_type,
-            custom_suggestions,
-            copy_mode: copy_mode || 'auto',
-            logo_url
-          })
+          .update(updateFields)
           .eq('id', id)
           .select()
           .single();
@@ -662,6 +780,187 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
         status: 500, 
         headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
       });
+    }
+  }
+
+  // ==========================================
+  // 4. SHORT LINK SLUGS ENDPOINTS
+  // ==========================================
+
+
+  // GET, POST, DELETE Slugs Management
+  if (path === '/adminApiBlog/api/reviews/clients/slugs') {
+    // Determine target client ID based on request or token
+    let targetClientId = url.searchParams.get('clientId');
+    if (!targetClientId && method === 'POST') {
+      try {
+        const body = await request.clone().json();
+        targetClientId = body.clientId;
+      } catch (e) {}
+    }
+    if (!targetClientId) {
+      targetClientId = payload.clientId;
+    }
+
+    const isAdmin = payload.role === 'admin' || payload.role === 'global';
+    const isAllowed = isAdmin || (payload.role === 'client' && payload.clientId === targetClientId);
+
+    if (!isAllowed || !targetClientId) {
+      return new Response(JSON.stringify({ error: "Forbidden. Invalid permissions." }), { 
+        status: 403, 
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+      });
+    }
+
+    // GET List Slugs
+    if (method === 'GET') {
+      try {
+        const { data, error } = await supabaseAdmin
+          .from('review_slugs')
+          .select('*')
+          .eq('client_id', targetClientId)
+          .order('created_at', { ascending: true });
+
+        if (error) {
+          return new Response(JSON.stringify({ error: error.message }), { 
+            status: 500, 
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+          });
+        }
+
+        return new Response(JSON.stringify(data), { 
+          status: 200, 
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: err.message }), { 
+          status: 500, 
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+        });
+      }
+    }
+
+    // POST Create Slug
+    if (method === 'POST') {
+      try {
+        const { slug } = await request.json();
+        if (!slug || typeof slug !== 'string') {
+          return new Response(JSON.stringify({ error: "Slug is required." }), { 
+            status: 400, 
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+          });
+        }
+
+        const cleanSlug = slug.toLowerCase().trim().replace(/[^a-z0-9-_]/g, '');
+        if (cleanSlug.length < 3) {
+          return new Response(JSON.stringify({ error: "Slug must be at least 3 characters long and contain only alphanumeric characters, hyphens or underscores." }), { 
+            status: 400, 
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+          });
+        }
+
+        // 1. Check if slug is already taken
+        const { data: existingSlug, error: slugCheckErr } = await supabaseAdmin
+          .from('review_slugs')
+          .select('id')
+          .eq('slug', cleanSlug)
+          .maybeSingle();
+
+        if (slugCheckErr) {
+          return new Response(JSON.stringify({ error: slugCheckErr.message }), { 
+            status: 500, 
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+          });
+        }
+
+        if (existingSlug) {
+          return new Response(JSON.stringify({ error: "This short link is already taken. Please try another slug." }), { 
+            status: 400, 
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+          });
+        }
+
+        // 2. Check if client already has 3 slugs
+        const { data: currentSlugs, error: countErr } = await supabaseAdmin
+          .from('review_slugs')
+          .select('id')
+          .eq('client_id', targetClientId);
+
+        if (countErr) {
+          return new Response(JSON.stringify({ error: countErr.message }), { 
+            status: 500, 
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+          });
+        }
+
+        if (currentSlugs && currentSlugs.length >= 3) {
+          return new Response(JSON.stringify({ error: "Maximum of 3 shortened links allowed per project." }), { 
+            status: 400, 
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+          });
+        }
+
+        // 3. Insert new slug
+        const { data, error } = await supabaseAdmin
+          .from('review_slugs')
+          .insert({ client_id: targetClientId, slug: cleanSlug })
+          .select()
+          .single();
+
+        if (error) {
+          return new Response(JSON.stringify({ error: error.message }), { 
+            status: 500, 
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+          });
+        }
+
+        return new Response(JSON.stringify(data), { 
+          status: 201, 
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: err.message }), { 
+          status: 500, 
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+        });
+      }
+    }
+
+    // DELETE Slug
+    if (method === 'DELETE') {
+      try {
+        const slug = url.searchParams.get('slug');
+        if (!slug) {
+          return new Response(JSON.stringify({ error: "slug parameter is required." }), { 
+            status: 400, 
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+          });
+        }
+
+        const cleanSlug = slug.toLowerCase().trim();
+        const { error } = await supabaseAdmin
+          .from('review_slugs')
+          .delete()
+          .eq('client_id', targetClientId)
+          .eq('slug', cleanSlug);
+
+        if (error) {
+          return new Response(JSON.stringify({ error: error.message }), { 
+            status: 500, 
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+          });
+        }
+
+        return new Response(JSON.stringify({ success: true }), { 
+          status: 200, 
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: err.message }), { 
+          status: 500, 
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+        });
+      }
     }
   }
 
