@@ -999,7 +999,7 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
         if (payload.projectId) {
           return new Response(JSON.stringify({ error: "Access denied. Restricted users cannot create projects." }), { status: 403, headers: corsHeaders });
         }
-        const { name, url: targetUrl } = await request.json();
+        const { name, url: targetUrl, contact_email } = await request.json();
         if (!name) {
           return new Response(JSON.stringify({ error: "Project name is required" }), { status: 400, headers: corsHeaders });
         }
@@ -1008,6 +1008,9 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
         const insertPayload = { name };
         if (targetUrl) {
           insertPayload.base_url = targetUrl;
+        }
+        if (contact_email) {
+          insertPayload.contact_email = contact_email.toLowerCase();
         }
 
         const { data, error } = await supabaseAdmin
@@ -1784,6 +1787,7 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
           <div class="flex-group" style="margin-top: 15px; display: flex; flex-direction: column; gap: 10px;">
             <input type="text" id="new-project-name" placeholder="Client / Site Name (e.g., Acme Agency, Spark eCommerce)">
             <input type="text" id="new-project-url" placeholder="Site URL (e.g., https://acme.com)">
+            <input type="email" id="new-project-contact-email" placeholder="Contact Email — for blog management login (e.g., client@acme.com)">
             <button class="btn" style="align-self: flex-start;" onclick="createProject()">Create Project Row</button>
           </div>
         </div>
@@ -2389,6 +2393,7 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
     async function createProject() {
       const name = document.getElementById('new-project-name').value;
       const url = document.getElementById('new-project-url').value;
+      const contactEmail = document.getElementById('new-project-contact-email').value;
       if (!name) return showToast("Name is required!");
       try {
         const res = await fetch(baseUrl + "/api/projects", {
@@ -2397,11 +2402,12 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
             "Content-Type": "application/json",
             "Authorization": "Bearer " + token
           },
-          body: JSON.stringify({ name, url })
+          body: JSON.stringify({ name, url, contact_email: contactEmail || null })
         });
         if (res.ok) {
           document.getElementById('new-project-name').value = '';
           document.getElementById('new-project-url').value = '';
+          document.getElementById('new-project-contact-email').value = '';
           loadProjects();
         } else {
           const data = await res.json();
