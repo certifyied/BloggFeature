@@ -141,9 +141,9 @@ export async function handleAuthRequest(request, env, ctx, path, method, supabas
       let projectId = null;
       let clientId = null;
 
-      if (isClientReviewsPortal) {
-        // --- 1. CLIENT REVIEWS PORTAL LOGIN ---
-        // Fetch client from review_clients directly
+      if (isClientReviewsPortal || isReviewsAdminPortal) {
+        // --- 1 & 2. REVIEWS PORTAL LOGINS (CLIENT OR ADMIN) ---
+        // A. Check if the user is a client in review_clients
         try {
           const { data: clientUser } = await supabaseAdmin
             .from('review_clients')
@@ -160,26 +160,27 @@ export async function handleAuthRequest(request, env, ctx, path, method, supabas
         } catch (e) {
           console.error("review_clients lookup failed:", e.message);
         }
-      } else if (isReviewsAdminPortal) {
-        // --- 2. REVIEWS ADMIN DASHBOARD LOGIN ---
-        // Only allow admins from the admins table (or global fallback email)
-        try {
-          const { data: adminUser } = await supabaseAdmin
-            .from('admins')
-            .select('role, project_id')
-            .eq('email', email.toLowerCase())
-            .maybeSingle();
 
-          if (adminUser && (adminUser.role === 'admin' || adminUser.role === 'global')) {
-            isAuthorized = true;
-            role = adminUser.role;
-            projectId = adminUser.project_id;
+        // B. Check if the user is an admin in admins
+        if (!isAuthorized) {
+          try {
+            const { data: adminUser } = await supabaseAdmin
+              .from('admins')
+              .select('role, project_id')
+              .eq('email', email.toLowerCase())
+              .maybeSingle();
+
+            if (adminUser && (adminUser.role === 'admin' || adminUser.role === 'global')) {
+              isAuthorized = true;
+              role = adminUser.role;
+              projectId = adminUser.project_id;
+            }
+          } catch (e) {
+            console.error("Admins lookup failed:", e.message);
           }
-        } catch (e) {
-          console.error("Admins lookup failed for reviewdash:", e.message);
         }
 
-        // Check if global email fallback
+        // C. Check global admin email fallback
         if (!isAuthorized && email.toLowerCase() === (env.ADMIN_EMAIL || '').toLowerCase()) {
           isAuthorized = true;
           role = 'admin';
@@ -245,7 +246,7 @@ export async function handleAuthRequest(request, env, ctx, path, method, supabas
         role, 
         projectId, 
         clientId,
-        isClientPortal: isClientReviewsPortal
+        isClientPortal: role === 'client'
       });
 
       const magicLink = `${redirectUrl}?magic_token=${magicToken}`;
