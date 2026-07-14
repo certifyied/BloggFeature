@@ -16,6 +16,49 @@ function generateLocalSuggestions(businessName, keywordsStr) {
   ];
 }
 
+// Shared AI suggestion generator — used by /submit (background refresh) and cron
+async function generateAISuggestions(env, client, customSuggestions = []) {
+  if (!env.OPENROUTER_API_KEY) return null;
+  try {
+    let guidanceTemplate = '';
+    if (customSuggestions.length > 0) {
+      const randomIndex = Math.floor(Math.random() * customSuggestions.length);
+      guidanceTemplate = ` Use this user-provided example template as a reference for tone/style: "${customSuggestions[randomIndex]}".`;
+    }
+    const systemPrompt = `You are an AI assistant helping a customer write a genuine, positive Google review for a business named "${client.name}". The business has specified these keywords that MUST be woven into the reviews: ${client.ai_keywords || 'excellent service'}.${guidanceTemplate} Generate exactly 3 to 4 distinct, natural-sounding, positive (5-star) review variations that naturally weave in the business name "${client.name}" and explicitly use one or more of these keywords in each variation. Make them feel written by different human customers. Critically, VARY the length of each variation: make one very short (1 sentence), one medium (2 sentences), and one more detailed (3 sentences). Respond ONLY with a valid JSON object containing an array of strings in the key "reviews". Example: {"reviews": ["variation 1", "variation 2", "variation 3"]}`;
+    const randomSeed = Math.floor(Math.random() * 1000000);
+    const aiRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${env.OPENROUTER_API_KEY}`,
+        'HTTP-Referer': 'https://certifyied.com',
+        'X-Title': 'Certifyied Review Funnel'
+      },
+      body: JSON.stringify({
+        model: 'nvidia/nemotron-3-ultra-550b-a55b:free',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: `Generate positive reviews for: ${client.ai_keywords || ''} (Seed: ${randomSeed})` }
+        ],
+        temperature: 0.9,
+        seed: randomSeed,
+        response_format: { type: 'json_object' }
+      })
+    });
+    if (!aiRes.ok) return null;
+    const aiData = await aiRes.json();
+    const text = aiData.choices?.[0]?.message?.content;
+    if (!text) return null;
+    const parsed = JSON.parse(text);
+    return parsed.reviews || parsed.examples || (Array.isArray(parsed) ? parsed : null);
+  } catch (e) {
+    console.error('[generateAISuggestions] Error:', e.message);
+    return null;
+  }
+}
+
+
 // Router handler for reviews endpoints
 export async function handleReviewRequest(request, env, ctx, path, method, url, payload, supabaseAdmin, corsHeaders, logAction) {
   
@@ -259,16 +302,47 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
         examples = customSuggestions;
       } else if (suggestionType === 'ai') {
         // --- DB CACHE CHECK ---
-        // Serve from cache if it was generated within the last 2 hours
         const cachedAt = client.suggestions_cached_at ? new Date(client.suggestions_cached_at) : null;
         const cacheAgeMs = cachedAt ? (Date.now() - cachedAt.getTime()) : Infinity;
         const CACHE_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours
+        const hasFreshCache = client.cached_suggestions && Array.isArray(client.cached_suggestions) && client.cached_suggestions.length > 0 && cacheAgeMs < CACHE_TTL_MS;
 
-        if (client.cached_suggestions && Array.isArray(client.cached_suggestions) && client.cached_suggestions.length > 0 && cacheAgeMs < CACHE_TTL_MS) {
-          // Shuffle cached suggestions so they feel fresh each visit
+        if (hasFreshCache) {
+          // ✅ Serve from cache instantly — shuffle for variety
           examples = [...client.cached_suggestions].sort(() => 0.5 - Math.random());
+
+          // 🔁 Only trigger background regeneration if cache is >30 min old
+          // Prevents an AI call on every single visit — cooldown guard
+          const REFRESH_COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes
+          const needsBackgroundRefresh = cacheAgeMs > REFRESH_COOLDOWN_MS;
+
+          if (needsBackgroundRefresh) {
+            // Mark as used so cron knows context
+            supabaseAdmin.from('review_clients').update({
+              suggestions_used_at: new Date().toISOString()
+            }).eq('id', clientId).catch(e => console.error('suggestions_used_at write failed:', e));
+
+            // Fire-and-forget: regenerate in background
+            ;(async () => {
+              try {
+                const freshExamples = await generateAISuggestions(env, client);
+                if (freshExamples && freshExamples.length > 0) {
+                  await supabaseAdmin.from('review_clients').update({
+                    cached_suggestions: freshExamples,
+                    suggestions_cached_at: new Date().toISOString()
+                  }).eq('id', clientId);
+                  console.log(`[Submit] Background refresh done for ${client.name} (cache was ${Math.round(cacheAgeMs / 60000)}min old)`);
+                }
+              } catch (bgErr) {
+                console.error(`[Submit] Background refresh failed for ${client.name}:`, bgErr.message);
+              }
+            })();
+          } else {
+            console.log(`[Submit] Cache is fresh (${Math.round(cacheAgeMs / 60000)}min old) — skipping background refresh for ${client.name}`);
+          }
+
         } else {
-          // Cache is stale or missing — generate fresh AI suggestions
+          // Cache is stale or missing — generate fresh AI suggestions synchronously
           if (env.OPENROUTER_API_KEY) {
           // Call OpenRouter API if API key exists
           try {
@@ -318,11 +392,12 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
               }
             }
 
-            // Save fresh suggestions back to DB cache (fire-and-forget)
+            // Save fresh suggestions back to DB cache + mark used
             if (examples.length > 0) {
               supabaseAdmin.from('review_clients').update({
                 cached_suggestions: examples,
-                suggestions_cached_at: new Date().toISOString()
+                suggestions_cached_at: new Date().toISOString(),
+                suggestions_used_at: new Date().toISOString()
               }).eq('id', clientId).then(() => {}).catch(e => console.error('Cache write failed:', e));
             }
 
@@ -1100,13 +1175,14 @@ export async function refreshSuggestionCache(env, supabaseAdmin) {
         // Conditions that trigger regeneration:
         // 1. No cache at all
         // 2. Cache is older than 2 hours (stale)
-        // 3. Suggestions were recently used (within last 20 minutes) — keep them fresh
+        // 3. Cache was used recently AND is older than 30 min (submit's cooldown already handles <30 min)
+        const REFRESH_COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes — must match /submit cooldown
         const needsRefresh =
           !client.cached_suggestions ||
           !Array.isArray(client.cached_suggestions) ||
           client.cached_suggestions.length === 0 ||
           cacheAgeMs > CACHE_TTL_MS ||
-          usedAgeMs < 20 * 60 * 1000; // used within last 20 minutes → refresh
+          (usedAgeMs < 20 * 60 * 1000 && cacheAgeMs > REFRESH_COOLDOWN_MS); // used recently but cache is >30min old
 
         if (!needsRefresh) {
           console.log(`[CronCache] Skipping ${client.name} — cache is fresh.`);
@@ -1115,57 +1191,12 @@ export async function refreshSuggestionCache(env, supabaseAdmin) {
 
         console.log(`[CronCache] Refreshing suggestions for: ${client.name}`);
 
-        let freshExamples = null;
-
-        if (env.OPENROUTER_API_KEY) {
-          const systemPrompt = `You are an AI assistant helping a customer write a genuine, positive Google review for a business named "${client.name}". The business has specified these keywords: ${client.ai_keywords || 'excellent service'}. Generate exactly 3 to 4 distinct, natural-sounding, positive (5-star) review variations. Make them feel written by different human customers. Vary length: one very short (1 sentence), one medium (2 sentences), one detailed (3 sentences). Respond ONLY with valid JSON: {"reviews": ["variation 1", "variation 2", "variation 3"]}`;
-
-          const randomSeed = Math.floor(Math.random() * 1000000);
-          const aiRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${env.OPENROUTER_API_KEY}`,
-              'HTTP-Referer': 'https://certifyied.com',
-              'X-Title': 'Certifyied Review Funnel'
-            },
-            body: JSON.stringify({
-              model: 'nvidia/nemotron-3-ultra-550b-a55b:free',
-              messages: [
-                { role: 'system', content: systemPrompt },
-                { role: 'user', content: `Generate positive reviews for: ${client.ai_keywords || ''} (Seed: ${randomSeed})` }
-              ],
-              temperature: 0.9,
-              seed: randomSeed,
-              response_format: { type: 'json_object' }
-            })
-          });
-
-          if (aiRes.ok) {
-            const aiData = await aiRes.json();
-            const text = aiData.choices?.[0]?.message?.content;
-            if (text) {
-              try {
-                const parsed = JSON.parse(text);
-                freshExamples = parsed.reviews || parsed.examples || (Array.isArray(parsed) ? parsed : null);
-              } catch (parseErr) {
-                console.error(`[CronCache] JSON parse failed for ${client.name}:`, parseErr.message);
-              }
-            }
-          } else {
-            console.warn(`[CronCache] OpenRouter returned ${aiRes.status} for ${client.name}`);
-          }
-        }
+        // Use shared AI helper (same logic as /submit)
+        let freshExamples = await generateAISuggestions(env, client, client.custom_suggestions || []);
 
         // If AI call failed or no key, generate local fallback
         if (!freshExamples || freshExamples.length === 0) {
-          const name = client.name || 'this business';
-          const kw = client.ai_keywords || 'great service';
-          freshExamples = [
-            `Excellent experience at ${name}! The ${kw} really stood out. Highly recommend to everyone.`,
-            `Visited ${name} recently and was very impressed with the ${kw}. Will definitely come back!`,
-            `${name} offers outstanding ${kw}. The team was professional and friendly throughout. 5 stars!`
-          ];
+          freshExamples = generateLocalSuggestions(client.name, client.ai_keywords);
         }
 
         // Write fresh suggestions back to DB cache
