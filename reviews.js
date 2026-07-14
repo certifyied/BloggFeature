@@ -207,14 +207,17 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
                         </table>
                       </div>
 
-                      <p style="font-size: 15px; line-height: 1.6;">
+                       <p style="font-size: 15px; line-height: 1.6;">
                         We recommend reaching out to this customer as soon as possible to resolve their concerns and prevent any negative public reviews.
                       </p>
 
                       <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 24px 0;" />
-                      <p style="color: #94a3b8; font-size: 12px; text-align: center; margin: 0;">
-                        This is an automated notification from Review Manager.
-                      </p>
+                      <div style="text-align: center;">
+                        <img src="https://www.reviewmanager.in/favicon.ico" alt="Review Manager Logo" style="height: 32px; width: auto; margin-bottom: 8px;" />
+                        <p style="color: #94a3b8; font-size: 12px; margin: 0;">
+                          This is an automated notification from Review Manager.
+                        </p>
+                      </div>
                     </div>
                   `,
                 }),
@@ -245,15 +248,31 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
       const suggestionType = client.suggestion_type || 'ai';
       const customSuggestions = Array.isArray(client.custom_suggestions) ? client.custom_suggestions : [];
 
-      if (suggestionType === 'custom' && customSuggestions.length > 0) {
+      // Origin guard: Verify request originates from reviewmanager.in
+      const origin = request.headers.get('origin') || '';
+      const referer = request.headers.get('referer') || '';
+      const isAllowedOrigin = origin.includes('reviewmanager.in') || referer.includes('reviewmanager.in') || origin.includes('localhost') || referer.includes('localhost');
+
+      if (!isAllowedOrigin) {
+        examples = ["Good service", "Good service", "Good service"];
+      } else if (suggestionType === 'custom' && customSuggestions.length > 0) {
         examples = customSuggestions;
       } else if (suggestionType === 'ai') {
         if (env.OPENROUTER_API_KEY) {
           // Call OpenRouter API if API key exists
           try {
-            const systemPrompt = `You are an AI assistant helping a customer write a genuine, positive Google review for a business named "${client.name}". The business has specified these keywords to emphasize: ${client.ai_keywords || 'excellent service'}. Generate exactly 3 to 4 distinct, natural-sounding, positive (5-star) review variations (2 to 4 sentences each) that naturally weave in the business name "${client.name}" and some of these keywords. Make them feel written by different human customers (varying style, length, and tone). Respond ONLY with a valid JSON object containing an array of strings in the key "reviews". Example: {"reviews": ["variation 1", "variation 2", "variation 3"]}`;
+            let guidanceTemplate = "";
+            if (customSuggestions.length > 0) {
+              const randomIndex = Math.floor(Math.random() * customSuggestions.length);
+              guidanceTemplate = ` Use this user-provided example template as a reference for tone/style: "${customSuggestions[randomIndex]}".`;
+            }
+            
+            const systemPrompt = `You are an AI assistant helping a customer write a genuine, positive Google review for a business named "${client.name}". The business has specified these keywords that MUST be woven into the reviews: ${client.ai_keywords || 'excellent service'}.${guidanceTemplate} Generate exactly 3 to 4 distinct, natural-sounding, positive (5-star) review variations that naturally weave in the business name "${client.name}" and explicitly use one or more of these keywords in each variation. Make them feel written by different human customers. Critically, VARY the length of each variation: make one very short (1 sentence), one medium (2 sentences), and one more detailed (3 sentences). Vary the tone and length styles so they are not the same size. Respond ONLY with a valid JSON object containing an array of strings in the key "reviews". Example: {"reviews": ["variation 1", "variation 2", "variation 3"]}`;
 
-            const aiRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+             // Generate a random seed/salt to prevent OpenRouter/provider response caching
+             const randomSeed = Math.floor(Math.random() * 1000000);
+
+             const aiRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
@@ -262,11 +281,13 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
                 'X-Title': 'Certifyied Review Funnel'
               },
               body: JSON.stringify({
-                model: 'google/gemini-2.5-flash',
+                model: 'nvidia/nemotron-3-ultra-550b-a55b:free',
                 messages: [
                   { role: 'system', content: systemPrompt },
-                  { role: 'user', content: `Generate positive reviews utilizing keywords: ${client.ai_keywords}` }
+                  { role: 'user', content: `Generate positive reviews utilizing keywords: ${client.ai_keywords || ''} (Request ID: ${randomSeed})` }
                 ],
+                temperature: 0.85,
+                seed: randomSeed,
                 response_format: { type: 'json_object' }
               })
             });
@@ -577,6 +598,7 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
         }
 
         const updateFields = {
+          name,
           google_review_link,
           ai_keywords,
           suggestion_type,
@@ -585,11 +607,8 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
           logo_url
         };
 
-        if (isAdmin) {
-          updateFields.name = name;
-          if (email) {
-            updateFields.email = email.toLowerCase();
-          }
+        if (email) {
+          updateFields.email = email.toLowerCase();
         }
 
         const { data, error } = await supabaseAdmin
@@ -708,7 +727,7 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
       
       const resQuery = await supabaseAdmin
         .from('review_clients')
-        .select('name, email, google_review_link, ai_keywords, suggestion_type, custom_suggestions, copy_mode, logo_url')
+        .select('name, email, google_review_link, ai_keywords, suggestion_type, custom_suggestions, copy_mode, logo_url, google_account_id, google_location_id')
         .eq('id', clientId)
         .maybeSingle();
 

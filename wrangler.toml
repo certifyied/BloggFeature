@@ -11,3 +11,6 @@ compatibility_flags = [ "nodejs_compat" ]
 [observability.logs]
 enabled = true
 invocation_logs = true
+
+[triggers]
+crons = [ "*/5 * * * *" ]

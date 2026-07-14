@@ -55,16 +55,19 @@ export async function sendOTPEmail(env, email, otp) {
       'Authorization': `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
-      from: 'Certifyied Portal <no-reply@send.certifyied.com>',
+      from: 'Review Manager Portal <no-reply@send.certifyied.com>',
       to: [email],
-      subject: 'Your Certifyied Login OTP',
+      subject: 'Your Review Manager Login OTP',
       html: `<div style="font-family:sans-serif;background:#0b0f19;color:#f9fafb;padding:40px;border-radius:12px;max-width:500px;margin:auto;border:1px solid #1f2937;">
-  <h2 style="color:#6366f1;font-weight:700;margin-bottom:20px;">Portal Access</h2>
-  <p style="color:#9ca3af;font-size:14px;line-height:1.6;">A login request was made. Use the OTP below to authenticate:</p>
+  <div style="text-align:center;margin-bottom:20px;">
+    <img src="https://www.reviewmanager.in/favicon.ico" alt="Review Manager Logo" style="height:48px;width:auto;" />
+  </div>
+  <h2 style="color:#6366f1;font-weight:700;margin-bottom:20px;text-align:center;">Portal Access</h2>
+  <p style="color:#9ca3af;font-size:14px;line-height:1.6;text-align:center;">A login request was made. Use the OTP below to authenticate:</p>
   <div style="font-size:36px;font-weight:800;color:#10b981;letter-spacing:6px;text-align:center;margin:30px 0;background:#161e2e;padding:20px;border-radius:8px;border:1px solid #1f2937;">${otp}</div>
-  <p style="color:#9ca3af;font-size:12px;">Valid for 10 minutes. If you did not request this, please ignore this email.</p>
+  <p style="color:#9ca3af;font-size:12px;text-align:center;">Valid for 10 minutes. If you did not request this, please ignore this email.</p>
 </div>`,
-      text: `Your Certifyied login OTP is: ${otp}\n\nValid for 10 minutes.`,
+      text: `Your Review Manager login OTP is: ${otp}\n\nValid for 10 minutes.`,
     }),
   });
 
@@ -94,20 +97,23 @@ export async function sendMagicLinkEmail(env, email, magicLink) {
       'Authorization': `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
-      from: 'Certifyied Portal <no-reply@send.certifyied.com>',
+      from: 'Review Manager Portal <no-reply@send.certifyied.com>',
       to: [email],
-      subject: 'Log in to your Certifyied Portal',
+      subject: 'Log in to your Review Manager Portal',
       html: `<div style="font-family:sans-serif;background:#ffffff;color:#0f172a;padding:40px;border-radius:12px;max-width:500px;margin:auto;border:1px solid #e2e8f0;box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);">
-  <h2 style="color:#6366f1;font-weight:700;margin-bottom:20px;">Portal Access</h2>
-  <p style="color:#475569;font-size:14px;line-height:1.6;">Click the button below to log in to your dashboard instantly. No password or verification code required:</p>
+  <div style="text-align:center;margin-bottom:20px;">
+    <img src="https://www.reviewmanager.in/favicon.ico" alt="Review Manager Logo" style="height:48px;width:auto;" />
+  </div>
+  <h2 style="color:#6366f1;font-weight:700;margin-bottom:20px;text-align:center;">Portal Access</h2>
+  <p style="color:#475569;font-size:14px;line-height:1.6;text-align:center;">Click the button below to log in to your dashboard instantly. No password or verification code required:</p>
   <div style="text-align:center;margin:30px 0;">
     <a href="${magicLink}" style="display:inline-block;background:#4f46e5;color:#ffffff;padding:12px 24px;border-radius:8px;font-weight:600;text-decoration:none;font-size:15px;box-shadow:0 2px 4px rgba(79,70,229,0.2);">Log In to Dashboard</a>
   </div>
   <p style="color:#94a3b8;font-size:12px;line-height:1.4;word-break:break-all;">Or copy and paste this link in your browser:<br/><a href="${magicLink}" style="color:#6366f1;">${magicLink}</a></p>
-  <hr style="border:0;border-top:1px solid #e2e8f0;margin:20px 0;"/>
-  <p style="color:#94a3b8;font-size:11px;">This link is valid for 15 minutes. If you did not request this, you can safely ignore this email.</p>
+  <hr style="border:0;border-top:1px solid #e2e8f0;margin:20px 0 Pap;"/>
+  <p style="color:#94a3b8;font-size:11px;text-align:center;">This link is valid for 15 minutes. If you did not request this, you can safely ignore this email.</p>
 </div>`,
-      text: `Click the link below to log in to your Certifyied dashboard:\n\n${magicLink}\n\nValid for 15 minutes.`,
+      text: `Click the link below to log in to your Review Manager dashboard:\n\n${magicLink}\n\nValid for 15 minutes.`,
     }),
   });
 

@@ -1266,19 +1266,37 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
           <br/><br/>
           <hr/>
           <div style="text-align: center; font-family: sans-serif; color: #666; margin-top: 20px;">
-            <p style="font-size: 14px; margin-bottom: 10px;">This message was securely delivered by the Contact Service of Certifyied.</p>
-            <p style="font-size: 14px; margin-bottom: 20px;">Thanks for choosing Certifyied!</p>
-            <img src="https://www.certifyied.com/certifyied_logo.png" alt="Certifyied Logo" style="height: 40px; width: auto;" />
+            <p style="font-size: 14px; margin-bottom: 10px;">This message was securely delivered by the Contact Service of Review Manager.</p>
+            <p style="font-size: 14px; margin-bottom: 20px;">Thanks for choosing Review Manager!</p>
+            <img src="https://www.reviewmanager.in/favicon.ico" alt="Review Manager Logo" style="height: 40px; width: auto;" />
           </div>
         `;
 
         const resendPayload = {
-          from: 'no-reply@send.certifyied.com',
+          from: 'Review Manager Contact <no-reply@send.certifyied.com>',
           to: project.contact_email,
           reply_to: sender_email,
           subject: subject || `New message from ${sender_name || sender_email}`,
           html: emailHtml
         };
+
+        // Log to form_submissions first to prevent data loss, default status is 'pending'
+        const { data: insertedRows, error: insertErr } = await supabaseAdmin.from('form_submissions').insert({
+          project_id: projectId,
+          sender_name,
+          sender_email,
+          phone_number,
+          subject,
+          message,
+          ip_address: ip
+        }).select();
+
+        if (insertErr) {
+          console.error("Database Insert Error:", insertErr);
+          return new Response(JSON.stringify({ error: "Failed to save submission." }), { status: 500, headers: strictCorsHeaders });
+        }
+
+        const submissionId = insertedRows?.[0]?.id;
 
         const resendRes = await fetch('https://api.resend.com/emails', {
           method: 'POST',
@@ -1291,20 +1309,24 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
 
         if (!resendRes.ok) {
           const resendErr = await resendRes.text();
-          console.error("Resend Error:", resendErr);
-          return new Response(JSON.stringify({ error: "Failed to send email." }), { status: 500, headers: strictCorsHeaders });
+          console.error("Resend Error (Submission saved successfully):", resendErr);
+          
+          if (submissionId) {
+            // Update submission status to failed
+            await supabaseAdmin.from('form_submissions')
+              .update({ email_delivery_status: 'failed', delivery_error_message: resendErr.substring(0, 500) })
+              .eq('id', submissionId);
+          }
+
+          return new Response(JSON.stringify({ success: true, warning: "Saved to database, but notification email failed." }), { status: 200, headers: strictCorsHeaders });
         }
 
-        // Log to form_submissions
-        await supabaseAdmin.from('form_submissions').insert({
-          project_id: projectId,
-          sender_name,
-          sender_email,
-          phone_number,
-          subject,
-          message,
-          ip_address: ip
-        });
+        if (submissionId) {
+          // Update submission status to success
+          await supabaseAdmin.from('form_submissions')
+            .update({ email_delivery_status: 'success' })
+            .eq('id', submissionId);
+        }
 
         // Log to audit_logs
         await logAction(supabaseAdmin, 'system', 'contact_form_submitted', { project_id: projectId, sender_email, ip }, ip);
@@ -1887,6 +1909,7 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
           
           <button class="btn btn-secondary dev-only" onclick="showIntegrations()">🔌 Get CDN Embed Snippet</button>
           <button class="btn btn-secondary dev-only" onclick="showSitemaps()">🔗 Get Sitemap Links</button>
+          <button class="btn btn-secondary" onclick="window.open('https://www.reviewmanager.in/reviewdash?clientId=' + selectedProjectId, '_blank')" style="background: #4285F4; color: #fff; border-color: #4285F4;">⭐ Review Manager Dashboard</button>
           <button class="btn btn-secondary global-only" onclick="showUsersPanel()">👥 User Permissions</button>
           <button class="btn btn-secondary global-only" onclick="showAuditLogsPanel()">📜 Audit Logs</button>
           <button class="btn btn-danger" onclick="logout()" style="font-size: 13px; padding: 6px 12px; box-shadow: none;" title="Log Out">
