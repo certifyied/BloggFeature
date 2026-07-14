@@ -216,25 +216,26 @@ export async function handleAuthRequest(request, env, ctx, path, method, supabas
           role = 'admin';
         }
 
-        // 3. Check if email is in projects table as contact_email (client blog management)
+        // 3. Check if email is in the new blog_clients table for blog management login
         if (!isAuthorized) {
           try {
-            const { data: projectUser } = await supabaseAdmin
-              .from('projects')
-              .select('id')
-              .eq('contact_email', email.toLowerCase())
+            const { data: blogClientUser } = await supabaseAdmin
+              .from('blog_clients')
+              .select('id, project_id')
+              .eq('email', email.toLowerCase())
+              .limit(1)
               .maybeSingle();
 
-            if (projectUser) {
+            if (blogClientUser) {
               isAuthorized = true;
               role = 'blogger';
-              projectId = projectUser.id;
+              projectId = blogClientUser.project_id;
+              clientId = blogClientUser.id;
             }
           } catch (e) {
-            console.error("Projects contact_email check failed:", e.message);
+            console.error("blog_clients lookup failed:", e.message);
           }
         }
-
       }
 
       if (!isAuthorized) {
@@ -335,27 +336,14 @@ export async function handleAuthRequest(request, env, ctx, path, method, supabas
 
       if (!isAuthorized) {
         try {
-          const { data: projectUser } = await supabaseAdmin
-            .from('projects')
-            .select('contact_email')
-            .eq('contact_email', email.toLowerCase())
+          const { data: blogClientUser } = await supabaseAdmin
+            .from('blog_clients')
+            .select('email')
+            .eq('email', email.toLowerCase())
+            .limit(1)
             .maybeSingle();
 
-          if (projectUser && projectUser.contact_email) {
-            isAuthorized = true;
-          }
-        } catch (e) {}
-      }
-
-      if (!isAuthorized) {
-        try {
-          const { data: projectUser } = await supabaseAdmin
-            .from('projects')
-            .select('contact_email')
-            .eq('contact_email', email.toLowerCase())
-            .maybeSingle();
-
-          if (projectUser && projectUser.contact_email) {
+          if (blogClientUser && blogClientUser.email) {
             isAuthorized = true;
           }
         } catch (e) {}
@@ -436,14 +424,16 @@ export async function handleAuthRequest(request, env, ctx, path, method, supabas
         } else if (email.toLowerCase() === (env.ADMIN_EMAIL || '').toLowerCase()) {
           role = 'admin';
         } else {
-          const { data: projectUser } = await supabaseAdmin
-            .from('projects')
-            .select('id')
-            .eq('contact_email', email.toLowerCase())
+          const { data: blogClientUser } = await supabaseAdmin
+            .from('blog_clients')
+            .select('id, project_id')
+            .eq('email', email.toLowerCase())
+            .limit(1)
             .maybeSingle();
-          if (projectUser) {
+          if (blogClientUser) {
             role = 'blogger';
-            projectId = projectUser.id;
+            projectId = blogClientUser.project_id;
+            clientId = blogClientUser.id;
           }
         }
       } catch (e) {}
