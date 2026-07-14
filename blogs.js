@@ -1022,12 +1022,89 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
         if (error) {
           return new Response(JSON.stringify({ error: error.message }), { status: 500, headers: corsHeaders });
         }
+
+        // Automatically link a blog client record if a contact email is provided
+        if (contact_email) {
+          try {
+            await supabaseAdmin.from('blog_clients').insert({
+              project_id: data.id,
+              email: contact_email.toLowerCase(),
+              name: name
+            });
+          } catch (e) {
+            console.error("Failed to auto-create blog_client:", e.message);
+          }
+        }
+
         await logAction(supabaseAdmin, payload.email, 'project_created', { name, id: data.id }, request.headers.get('CF-Connecting-IP') || '');
         return new Response(JSON.stringify(data), {
           status: 201,
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
       }
+    }
+
+    // GET & POST Blog Clients
+    if (path === '/adminApiBlog/api/blog-clients') {
+      if (request.method === 'GET') {
+        let query = supabaseAdmin.from('blog_clients').select('*, projects(name)');
+        if (payload.projectId) {
+          query = query.eq('project_id', payload.projectId);
+        }
+        const { data, error } = await query.order('created_at', { ascending: false });
+
+        if (error) {
+          return new Response(JSON.stringify({ error: error.message }), { status: 500, headers: corsHeaders });
+        }
+        return new Response(JSON.stringify({ blogClients: data }), {
+          status: 200,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      if (request.method === 'POST') {
+        if (payload.projectId) {
+          return new Response(JSON.stringify({ error: "Access denied." }), { status: 403, headers: corsHeaders });
+        }
+        const { project_id, name, email } = await request.json();
+        if (!project_id || !email) {
+          return new Response(JSON.stringify({ error: "project_id and email are required" }), { status: 400, headers: corsHeaders });
+        }
+
+        const { data, error } = await supabaseAdmin
+          .from('blog_clients')
+          .insert({ project_id, name, email: email.toLowerCase() })
+          .select()
+          .single();
+
+        if (error) {
+          return new Response(JSON.stringify({ error: error.message }), { status: 500, headers: corsHeaders });
+        }
+
+        await logAction(supabaseAdmin, payload.email, 'blog_client_created', { email, id: data.id }, request.headers.get('CF-Connecting-IP') || '');
+        return new Response(JSON.stringify(data), {
+          status: 201,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+    }
+
+    // DELETE Blog Client
+    const blogClientDeleteMatch = path.match(/^\/adminApiBlog\/api\/blog-clients\/([a-zA-Z0-9_-]+)$/);
+    if (blogClientDeleteMatch && request.method === 'DELETE') {
+      if (payload.projectId) {
+        return new Response(JSON.stringify({ error: "Access denied." }), { status: 403, headers: corsHeaders });
+      }
+      const { error } = await supabaseAdmin
+        .from('blog_clients')
+        .delete()
+        .eq('id', blogClientDeleteMatch[1]);
+
+      if (error) {
+        return new Response(JSON.stringify({ error: error.message }), { status: 500, headers: corsHeaders });
+      }
+      await logAction(supabaseAdmin, payload.email, 'blog_client_deleted', { id: blogClientDeleteMatch[1] }, request.headers.get('CF-Connecting-IP') || '');
+      return new Response(JSON.stringify({ success: true }), { status: 200, headers: corsHeaders });
     }
 
     // Delete Project
@@ -1804,28 +1881,34 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
         </div>
         
         <div class="card dev-only" style="margin-bottom: 25px;">
-          <h3>Provision New Client Website Project</h3>
-          <p style="margin-top: 5px; margin-bottom: 10px; font-size: 13px;">Creating a project adds a new row in your Supabase database with a unique Project ID and establishes a fast indexed query workspace to serve all its associated blogs.</p>
+          <h3>Provision New Blog Client</h3>
+          <p style="margin-top: 5px; margin-bottom: 10px; font-size: 13px;">Authorizes a new client user to log in and manage stories for a specific parent project location.</p>
           <div class="flex-group" style="margin-top: 15px; display: flex; flex-direction: column; gap: 10px;">
-            <input type="text" id="new-project-name" placeholder="Client / Site Name (e.g., Acme Agency, Spark eCommerce)">
-            <input type="text" id="new-project-url" placeholder="Site URL (e.g., https://acme.com)">
-            <input type="email" id="new-project-contact-email" placeholder="Contact Email — for blog management login (e.g., client@acme.com)">
-            <button class="btn" style="align-self: flex-start;" onclick="createProject()">Create Project Row</button>
+            <label style="font-size:12px; font-weight:600;">Select Project *</label>
+            <select id="new-client-project-id" style="padding:10px; border-radius:8px; border:1px solid var(--border); background: #fff;"></select>
+            
+            <label style="font-size:12px; font-weight:600; margin-top:5px;">Blogger Name</label>
+            <input type="text" id="new-client-name" placeholder="e.g. John Doe, Lead Editor">
+            
+            <label style="font-size:12px; font-weight:600; margin-top:5px;">Login Email *</label>
+            <input type="email" id="new-client-email" placeholder="e.g. editor@domain.com">
+            
+            <button class="btn" style="align-self: flex-start; margin-top:10px;" onclick="createBlogClient()">Add Blog Client</button>
           </div>
         </div>
 
-        <h3 style="margin-bottom: 15px;">Your Projects</h3>
+        <h3 style="margin-bottom: 15px;">Your Blog Clients</h3>
         <div class="blog-table-container">
           <table class="blog-table">
             <thead>
               <tr>
-                <th>Project Name</th>
-                <th>Project ID</th>
+                <th>Blogger</th>
+                <th>Project / Domain</th>
                 <th style="text-align: right;">Actions</th>
               </tr>
             </thead>
             <tbody id="projects-list">
-              <!-- Projects load here -->
+              <!-- Blog Clients load here -->
             </tbody>
           </table>
         </div>
@@ -2340,40 +2423,61 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
       }
     }
 
-    // --- PROJECTS FLOW ---
+    // --- BLOG CLIENTS FLOW ---
+    let blogClientsCache = [];
+    
     async function loadProjects() {
+      // Replaces old projects load: gets both projects for dropdown and clients list
       try {
-        const res = await fetch(baseUrl + "/api/projects", {
+        // A. Load parent projects list for creation dropdown select box
+        const projRes = await fetch(baseUrl + "/api/projects", {
           headers: { "Authorization": "Bearer " + token }
         });
-        if (res.status === 401) return logout();
-        const data = await res.json();
-        projectsCache = data.projects || [];
+        if (projRes.status === 401) return logout();
+        const projData = await projRes.json();
+        projectsCache = projData.projects || [];
+        
+        const selectBox = document.getElementById('new-client-project-id');
+        if (selectBox) {
+          selectBox.innerHTML = '<option value="">-- Choose Project Parent --</option>';
+          projectsCache.forEach(p => {
+            const opt = document.createElement('option');
+            opt.value = p.id;
+            opt.innerText = p.name;
+            selectBox.appendChild(opt);
+          });
+        }
+
+        // B. Load blog clients
+        const clientRes = await fetch(baseUrl + "/api/blog-clients", {
+          headers: { "Authorization": "Bearer " + token }
+        });
+        const clientData = await clientRes.json();
+        blogClientsCache = clientData.blogClients || [];
         renderProjects();
       } catch (e) {
-        showToast("Failed to load projects: " + e.message);
+        showToast("Failed to load blog clients: " + e.message);
       }
     }
 
     function renderProjects() {
       const listEl = document.getElementById('projects-list');
       listEl.innerHTML = '';
-      if (projectsCache.length === 0) {
-        listEl.innerHTML = '<tr><td colspan="3" style="text-align:center;">No projects found.</td></tr>';
+      if (blogClientsCache.length === 0) {
+        listEl.innerHTML = '<tr><td colspan="3" style="text-align:center;">No blog clients found.</td></tr>';
         return;
       }
-      projectsCache.forEach(p => {
+      blogClientsCache.forEach(bc => {
         const tr = document.createElement('tr');
         
         const tdTitle = document.createElement('td');
         tdTitle.style.fontWeight = '600';
-        tdTitle.innerText = p.name || '(Untitled Project)';
+        tdTitle.innerHTML = '<div>' + (bc.name || 'Blogger') + '</div><div style="font-size: 11px; color: var(--muted); font-family: monospace; font-weight: normal; margin-top:2px;">' + bc.email + '</div>';
         
         const tdId = document.createElement('td');
-        tdId.style.fontFamily = 'monospace';
-        tdId.style.fontSize = '12px';
-        tdId.style.color = 'var(--muted)';
-        tdId.innerText = p.id;
+        tdId.style.fontSize = '13px';
+        const projectParentName = bc.projects ? bc.projects.name : 'Unknown parent project';
+        tdId.innerText = projectParentName;
         
         const tdActions = document.createElement('td');
         tdActions.style.textAlign = 'right';
@@ -2387,7 +2491,7 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
         manageBtn.style.padding = '6px 12px';
         manageBtn.style.fontSize = '12px';
         manageBtn.innerText = 'Manage Blogs';
-        manageBtn.onclick = () => viewProject(p.id, p.name);
+        manageBtn.onclick = () => viewProject(bc.project_id, projectParentName);
         
         btnGroup.appendChild(manageBtn);
 
@@ -2399,7 +2503,7 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
           deleteBtn.style.padding = '6px 12px';
           deleteBtn.style.fontSize = '12px';
           deleteBtn.innerText = 'Delete';
-          deleteBtn.onclick = () => deleteProject(p.id);
+          deleteBtn.onclick = () => deleteBlogClient(bc.id);
           btnGroup.appendChild(deleteBtn);
         }
         
@@ -2413,31 +2517,52 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
       });
     }
 
-    async function createProject() {
-      const name = document.getElementById('new-project-name').value;
-      const url = document.getElementById('new-project-url').value;
-      const contactEmail = document.getElementById('new-project-contact-email').value;
-      if (!name) return showToast("Name is required!");
+    async function createBlogClient() {
+      const pId = document.getElementById('new-client-project-id').value;
+      const cName = document.getElementById('new-client-name').value;
+      const cEmail = document.getElementById('new-client-email').value;
+      
+      if (!pId || !cEmail) return showToast("Project selection and Login Email are required!");
       try {
-        const res = await fetch(baseUrl + "/api/projects", {
+        const res = await fetch(baseUrl + "/api/blog-clients", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
             "Authorization": "Bearer " + token
           },
-          body: JSON.stringify({ name, url, contact_email: contactEmail || null })
+          body: JSON.stringify({ project_id: pId, name: cName, email: cEmail })
         });
         if (res.ok) {
-          document.getElementById('new-project-name').value = '';
-          document.getElementById('new-project-url').value = '';
-          document.getElementById('new-project-contact-email').value = '';
+          document.getElementById('new-client-name').value = '';
+          document.getElementById('new-client-email').value = '';
+          document.getElementById('new-client-project-id').value = '';
+          showToast("Blog client added successfully!");
           loadProjects();
         } else {
           const data = await res.json();
-          showToast(data.error);
+          showToast(data.error || "Failed to add blog client");
         }
       } catch (e) {
-        showToast("Error adding project");
+        showToast("Error adding blog client");
+      }
+    }
+
+    async function deleteBlogClient(id) {
+      if (!confirm("Are you sure you want to remove access for this blog client?")) return;
+      try {
+        const res = await fetch(baseUrl + "/api/blog-clients/" + id, {
+          method: "DELETE",
+          headers: { "Authorization": "Bearer " + token }
+        });
+        if (res.ok) {
+          showToast("Blog client access removed.");
+          loadProjects();
+        } else {
+          const data = await res.json();
+          showToast(data.error || "Failed to delete client");
+        }
+      } catch (e) {
+        showToast("Error deleting blog client");
       }
     }
 
