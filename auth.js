@@ -149,19 +149,17 @@ export async function handleAuthRequest(request, env, ctx, path, method, supabas
 
       if (isClientReviewsPortal || isReviewsAdminPortal) {
         // --- 1 & 2. REVIEWS PORTAL LOGINS (CLIENT OR ADMIN) ---
-        // A. Check if the user is a client in review_clients
         try {
-          const { data: clientUser } = await supabaseAdmin
+          const { data: clientUsers } = await supabaseAdmin
             .from('review_clients')
             .select('id, project_id')
-            .eq('email', email.toLowerCase())
-            .maybeSingle();
+            .eq('email', email.toLowerCase());
 
-          if (clientUser) {
+          if (clientUsers && clientUsers.length > 0) {
             isAuthorized = true;
             role = 'client';
-            clientId = clientUser.id;
-            projectId = clientUser.project_id;
+            clientId = clientUsers[0].id;
+            projectId = clientUsers[0].project_id;
           }
         } catch (e) {
           console.error("review_clients lookup failed:", e.message);
@@ -203,7 +201,7 @@ export async function handleAuthRequest(request, env, ctx, path, method, supabas
             .eq('email', email.toLowerCase())
             .maybeSingle();
 
-          if (adminUser) {
+          if (adminUser && adminUser.role !== 'client') {
             isAuthorized = true;
             role = adminUser.role || 'blogger';
             projectId = adminUser.project_id;
@@ -236,6 +234,7 @@ export async function handleAuthRequest(request, env, ctx, path, method, supabas
             console.error("Projects contact_email check failed:", e.message);
           }
         }
+
       }
 
       if (!isAuthorized) {
@@ -347,6 +346,22 @@ export async function handleAuthRequest(request, env, ctx, path, method, supabas
           }
         } catch (e) {}
       }
+
+      if (!isAuthorized) {
+        try {
+          const { data: projectUser } = await supabaseAdmin
+            .from('projects')
+            .select('contact_email')
+            .eq('contact_email', email.toLowerCase())
+            .maybeSingle();
+
+          if (projectUser && projectUser.contact_email) {
+            isAuthorized = true;
+          }
+        } catch (e) {}
+      }
+
+
 
       if (!isAuthorized) {
         return new Response(JSON.stringify({ error: "Unauthorized email address." }), {

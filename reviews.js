@@ -439,6 +439,41 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
     }
   }
 
+  // GET Locations matching client email address (for multi-project selectors)
+  if (path === '/adminApiBlog/api/reviews/clients/locations' && method === 'GET') {
+    try {
+      const email = payload.email;
+      if (!email) {
+        return new Response(JSON.stringify({ error: "Unauthorized. Email is required." }), {
+          status: 401,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        });
+      }
+
+      const { data, error } = await supabaseAdmin
+        .from('review_clients')
+        .select('id, name, logo_url, google_review_link')
+        .eq('email', email.toLowerCase());
+
+      if (error) {
+        return new Response(JSON.stringify({ error: error.message }), {
+          status: 500,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        });
+      }
+
+      return new Response(JSON.stringify({ locations: data || [] }), {
+        status: 200,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    } catch (err) {
+      return new Response(JSON.stringify({ error: err.message }), {
+        status: 500,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+  }
+
   if (path === '/adminApiBlog/api/reviews/clients') {
     const isClientPut = method === 'PUT' && payload.role === 'client';
     if (!isAdmin && !isClientPut) {
@@ -520,13 +555,25 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
               userId = authUser.user.id;
             }
             
-            // Insert/Upsert into admins table
-            await supabaseAdmin.from('admins').upsert({
-              id: userId,
-              email: email.toLowerCase(),
-              role: 'client',
-              project_id
-            });
+            // Check if the user is already in the admins table
+            const { data: existingAdmin } = await supabaseAdmin
+              .from('admins')
+              .select('id, role, project_id')
+              .eq('email', email.toLowerCase())
+              .maybeSingle();
+
+            if (!existingAdmin) {
+              // Insert into admins table only if they don't exist yet
+              await supabaseAdmin.from('admins').insert({
+                id: userId,
+                email: email.toLowerCase(),
+                role: 'client',
+                project_id
+              });
+            } else if (existingAdmin.role === 'client' && !existingAdmin.project_id) {
+              // Update project_id if they exist but it was null
+              await supabaseAdmin.from('admins').update({ project_id }).eq('id', userId);
+            }
           } catch (e) {
             return new Response(JSON.stringify({ error: "Failed to provision client user: " + e.message }), { 
               status: 500, 
@@ -707,11 +754,22 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
   // ==========================================
   if (path === '/adminApiBlog/api/reviews/client/dashboard' && method === 'GET') {
     try {
-      let clientId = payload.clientId;
+      let clientId = url.searchParams.get('clientId') || payload.clientId;
 
-      // If admin requests dashboard for a specific client
-      if (payload.role === 'admin' || payload.role === 'global') {
-        clientId = url.searchParams.get('clientId');
+      // Ensure that client-role users can only request dashboards for clients that match their authorized email
+      if (payload.role === 'client') {
+        const { data: matchedClient } = await supabaseAdmin
+          .from('review_clients')
+          .select('email')
+          .eq('id', clientId)
+          .maybeSingle();
+
+        if (!matchedClient || matchedClient.email.toLowerCase() !== payload.email.toLowerCase()) {
+          return new Response(JSON.stringify({ error: "Forbidden. Unauthorized client location access." }), {
+            status: 403,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+          });
+        }
       }
 
       if (!clientId) {
