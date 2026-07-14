@@ -201,7 +201,7 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
   // POST Submit Review (Feedbacks / Gatekeeper)
   if (path === '/adminApiBlog/api/reviews/public/submit' && method === 'POST') {
     try {
-      const { clientId, rating, reviewer_name, reviewer_email, comment, draft, refresh } = await request.json();
+      const { clientId, rating, reviewer_name, reviewer_email, comment, draft, refresh, refreshCount } = await request.json();
 
       if (!clientId || !rating) {
         return new Response(JSON.stringify({ error: "clientId and rating are required." }), { 
@@ -361,8 +361,8 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
 
         // If the cache was already served very recently (< 5 minutes ago) to this or another customer,
         // we bypass the cache and fetch fresh AI suggestions directly from the live API.
-        // Also bypasses cache on explicit "refresh" request.
-        const isCacheUsable = hasFreshCache && usedAgeMs > 5 * 60 * 1000 && !refresh;
+        // Also bypasses cache on explicit "refresh" request or if refreshCount is > 0 (subsequent tab requests).
+        const isCacheUsable = hasFreshCache && usedAgeMs > 5 * 60 * 1000 && !refresh && (!refreshCount || refreshCount === 0);
 
         if (isCacheUsable) {
           // ✅ Serve from cache instantly — shuffle for variety
