@@ -33,8 +33,11 @@ async function getWorkingModel(env) {
   // Checks nvidia/nemotron-3-ultra-550b-a55b:free first, then other fallback models
   const testModels = [
     "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+    "meta-llama/llama-3.3-70b-instruct:free",
     "meta-llama/llama-3.2-3b-instruct:free",
-    "meta-llama/llama-3.3-70b-instruct:free"
+    "tencent/hy3:free",
+    "openai/gpt-oss-20b:free"
   ];
 
   for (const model of testModels) {
@@ -115,9 +118,12 @@ Guidelines:
   const activeModel = await getWorkingModel(env);
   const models = [
     activeModel,
-    "meta-llama/llama-3.2-3b-instruct:free",
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
     "meta-llama/llama-3.3-70b-instruct:free",
-    "nvidia/nemotron-3-ultra-550b-a55b:free"
+    "meta-llama/llama-3.2-3b-instruct:free",
+    "tencent/hy3:free",
+    "openai/gpt-oss-20b:free"
   ].filter((v, i, a) => a.indexOf(v) === i); // Remove duplicates
 
   let responseText = null;
