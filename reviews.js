@@ -213,7 +213,7 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
       
       const resQuery = await supabaseAdmin
         .from('review_clients')
-        .select('name, email, google_review_link, ai_keywords, suggestion_type, custom_suggestions, copy_mode, cached_suggestions, suggestions_cached_at')
+        .select('name, email, google_review_link, ai_keywords, suggestion_type, custom_suggestions, copy_mode, cached_suggestions, suggestions_cached_at, suggestions_used_at')
         .eq('id', clientId)
         .maybeSingle();
 
@@ -353,10 +353,22 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
         const CACHE_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours
         const hasFreshCache = client.cached_suggestions && Array.isArray(client.cached_suggestions) && client.cached_suggestions.length > 0 && cacheAgeMs < CACHE_TTL_MS;
 
-        // Bypass cache check if "refresh: true" is requested
-        if (hasFreshCache && !refresh) {
+        const usedAt = client.suggestions_used_at ? new Date(client.suggestions_used_at) : null;
+        const usedAgeMs = usedAt ? (Date.now() - usedAt.getTime()) : Infinity;
+
+        // If the cache was already served very recently (< 5 minutes ago) to this or another customer,
+        // we bypass the cache and fetch fresh AI suggestions directly from the live API.
+        // Also bypasses cache on explicit "refresh" request.
+        const isCacheUsable = hasFreshCache && usedAgeMs > 5 * 60 * 1000 && !refresh;
+
+        if (isCacheUsable) {
           // ✅ Serve from cache instantly — shuffle for variety
           examples = [...client.cached_suggestions].sort(() => 0.5 - Math.random());
+
+          // Mark suggestions_used_at = now in background, so subsequent requests within 5 mins bypass cache
+          supabaseAdmin.from('review_clients').update({
+            suggestions_used_at: new Date().toISOString()
+          }).eq('id', clientId).then(() => {}).catch(e => console.error('suggestions_used_at write failed:', e));
 
           // 🔁 Only trigger background regeneration if cache is >30 min old
           // Prevents an AI call on every single visit — cooldown guard
@@ -364,11 +376,6 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
           const needsBackgroundRefresh = cacheAgeMs > REFRESH_COOLDOWN_MS;
 
           if (needsBackgroundRefresh) {
-            // Mark as used so cron knows context
-            supabaseAdmin.from('review_clients').update({
-              suggestions_used_at: new Date().toISOString()
-            }).eq('id', clientId).then(() => {}).catch(e => console.error('suggestions_used_at write failed:', e));
-
             // Fire-and-forget: regenerate in background
             ;(async () => {
               try {
@@ -389,7 +396,7 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
           }
 
         } else {
-          // Cache is stale, missing, or "refresh: true" is requested — generate fresh AI suggestions synchronously
+          // Cache is stale, missing, force-refreshed, or recently served — generate fresh AI suggestions synchronously
           if (env.OPENROUTER_API_KEY) {
             try {
               const freshExamples = await generateAISuggestions(env, client, customSuggestions);
