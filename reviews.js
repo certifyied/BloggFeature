@@ -8,12 +8,22 @@ function generateLocalSuggestions(businessName, keywordsStr) {
   const k1 = keywords[0] || defaultKeywords[0];
   const k2 = keywords[1] || defaultKeywords[1];
   const k3 = keywords[2] || keywords[0] || defaultKeywords[2];
+  const k4 = keywords[3] || keywords[1] || defaultKeywords[0];
 
-  return [
+  const pool = [
     `Outstanding service at ${businessName}! The team is extremely professional and they offer ${k1}. Had a very smooth experience.`,
     `I highly recommend ${businessName}! The staff is genuinely friendly and did an amazing job with ${k2}. Will definitely return!`,
-    `Top-notch quality and support at ${businessName}. Professional environment and great attention to ${k3}. 5 stars!`
+    `Top-notch quality and support at ${businessName}. Professional environment and great attention to ${k3}. 5 stars!`,
+    `Extremely pleased with my visit to ${businessName}. Their expertise in ${k4} is outstanding and the customer care is amazing.`,
+    `Best experience ever at ${businessName}! Highly skilled team, clean facilities, and excellent support for ${k1}.`,
+    `Very professional and reliable service at ${businessName}. They made sure I was comfortable and did a great job with ${k2}.`,
+    `Highly recommend ${businessName} to everyone! They went above and beyond with ${k3} and exceeded my expectations.`,
+    `Super friendly staff and top-quality care at ${businessName}. Truly the best place for ${k4}!`
   ];
+
+  // Pick 3 random unique templates from the pool
+  const shuffled = [...pool].sort(() => 0.5 - Math.random());
+  return shuffled.slice(0, 3);
 }
 
 // Shared AI suggestion generator — used by /submit (sync and background) and cron
@@ -418,15 +428,18 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
           // 🔁 Asynchronously generate next set in background (no user wait)
           ctx.waitUntil((async () => {
             try {
-              const freshExamples = await generateAISuggestions(env, client, customSuggestions);
-              if (freshExamples && freshExamples.length > 0) {
-                await supabaseAdmin.from('review_clients').update({
-                  cached_suggestions: freshExamples,
-                  suggestions_cached_at: new Date().toISOString(),
-                  suggestions_used_at: new Date().toISOString()
-                }).eq('id', clientId);
-                console.log(`[Submit] Background cache refresh done for ${client.name}`);
+              let freshExamples = await generateAISuggestions(env, client, customSuggestions);
+              if (!freshExamples || freshExamples.length === 0) {
+                // If AI fails or is rate-limited, generate a fresh randomized local set to update the cache
+                freshExamples = generateLocalSuggestions(client.name, client.ai_keywords);
               }
+              
+              await supabaseAdmin.from('review_clients').update({
+                cached_suggestions: freshExamples,
+                suggestions_cached_at: new Date().toISOString(),
+                suggestions_used_at: new Date().toISOString()
+              }).eq('id', clientId);
+              console.log(`[Submit] Background cache refresh done for ${client.name}`);
             } catch (bgErr) {
               console.error(`[Submit] Background cache refresh failed for ${client.name}:`, bgErr.message);
             }
