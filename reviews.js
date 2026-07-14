@@ -8,14 +8,70 @@ function generateLocalSuggestions(businessName, keywordsStr) {
   const k1 = keywords[0] || defaultKeywords[0];
   const k2 = keywords[1] || defaultKeywords[1];
   const k3 = keywords[2] || keywords[0] || defaultKeywords[2];
-  const k4 = keywords[3] || keywords[1] || defaultKeywords[0];
 
   return [
-    `Outstanding experience at ${businessName}! The entire team was incredibly professional, welcoming, and attentive. They made sure all my needs were met and their expertise in ${k1} was very impressive. Highly recommend them to anyone looking for premium service.`,
-    `I am extremely satisfied with my visit to ${businessName}. The facility is clean and modern, and the staff is genuinely friendly. They took the time to explain everything and did an amazing job with ${k2}. Will definitely be returning!`,
-    `From start to finish, the service at ${businessName} was top-notch. Their attention to detail and dedication to providing high-quality care is clear. If you need reliable assistance with ${k3}, this is absolutely the best place in town.`,
-    `Highly recommend ${businessName}! They went above and beyond to ensure a smooth, comfortable visit. The staff's expertise in ${k4} is outstanding and the results exceeded my expectations. Thank you for the wonderful support!`
+    `Outstanding service at ${businessName}! The team is extremely professional and they offer ${k1}. Had a very smooth experience.`,
+    `I highly recommend ${businessName}! The staff is genuinely friendly and did an amazing job with ${k2}. Will definitely return!`,
+    `Top-notch quality and support at ${businessName}. Professional environment and great attention to ${k3}. 5 stars!`
   ];
+}
+
+// Shared AI suggestion generator — used by /submit (sync and background) and cron
+let cachedWorkingModel = null;
+let lastModelCheckTime = 0;
+const MODEL_CHECK_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
+
+async function getWorkingModel(env) {
+  const now = Date.now();
+  if (cachedWorkingModel && (now - lastModelCheckTime < MODEL_CHECK_INTERVAL_MS)) {
+    return cachedWorkingModel;
+  }
+
+  console.log('[ModelCheck] Stale or missing working model. Running health check...');
+  const testPrompt = "respond ONLY with the word 'OK'";
+  
+  // Checks nvidia/nemotron-3-ultra-550b-a55b:free first, then other fallback models
+  const testModels = [
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "meta-llama/llama-3.2-3b-instruct:free",
+    "meta-llama/llama-3.3-70b-instruct:free"
+  ];
+
+  for (const model of testModels) {
+    try {
+      const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${env.OPENROUTER_API_KEY}`,
+          'HTTP-Referer': 'https://certifyied.com',
+          'X-Title': 'Certifyied Health Check'
+        },
+        body: JSON.stringify({
+          model: model,
+          messages: [{ role: 'user', content: testPrompt }],
+          max_tokens: 5,
+          temperature: 0.1
+        })
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.choices?.[0]?.message?.content) {
+          console.log(`[ModelCheck] Active model discovered: ${model}`);
+          cachedWorkingModel = model;
+          lastModelCheckTime = now;
+          return model;
+        }
+      }
+      console.warn(`[ModelCheck] Model ${model} failed health check (Status: ${res.status})`);
+    } catch (e) {
+      console.error(`[ModelCheck] Exception testing ${model}:`, e.message);
+    }
+  }
+
+  // Fallback if all test checks fail (using a free model)
+  return "meta-llama/llama-3.2-3b-instruct:free";
 }
 
 // Shared AI suggestion generator — used by /submit (sync and background) and cron
@@ -34,39 +90,35 @@ async function generateAISuggestions(env, client, customSuggestions = []) {
     guidanceTemplate = ` Use this user-provided example template as a reference for tone/style: "${actualCustomSuggestions[randomIndex]}".`;
   }
 
-  // Premium detailed prompt to ensure highly personalized, detailed, and realistic reviews.
-  const systemPrompt = `You are a professional local SEO copywriter and customer experience assistant helping a client write a genuine, enthusiastic, and highly detailed Google review for a business named "${client.name}".
-The business has specified these high-value, SEO-targeted keywords which MUST be woven naturally and contextually into the review variations:
+  // Concise prompt to ensure extremely fast model responses and short reviews.
+  const systemPrompt = `You are a professional local SEO copywriter and customer experience assistant helping a client write a genuine, enthusiastic Google review for a business named "${client.name}".
+The business has specified these keywords which MUST be woven naturally and contextually into the review variations:
 ${keywordsList.length > 0 ? keywordsList.map(kw => `- ${kw}`).join('\n') : '- excellent service'}
 
 ${guidanceTemplate}
 
-Generate exactly 3 to 4 distinct, premium, natural-sounding, positive (5-star) review variations.
+Generate exactly 3 distinct, positive (5-star) review variations.
 Guidelines:
-1. DO NOT make the reviews too short. Each review variation should be a detailed, rich paragraph consisting of 2 to 4 complete, well-structured sentences (between 30 to 70 words per review).
-2. The reviews must feel 100% written by different real human customers. Vary their writing style, tone, and specific points of focus:
-   - Variation 1: Focus heavily on the professionalism, staff quality, and specific specialized services (weaving in keywords).
-   - Variation 2: Focus on the excellent customer journey, ease of booking/visit, clean premium facility, and overall peace of mind.
-   - Variation 3: Focus on the long-term results, value, and a strong recommendation to friends/family.
-   - Variation 4 (if generated): A comprehensive review detailing a first-class overall experience.
-3. Incorporate the name "${client.name}" and the specified keywords naturally. Avoid "keyword stuffing" — the keywords should blend in seamlessly as if a real customer naturally described their experience.
+1. Keep the reviews short and sweet. Each review variation must consist of exactly 1 to 2 short sentences (maximum 20 to 35 words or 150 characters per variation).
+2. The reviews must feel 100% written by different real human customers. Vary their writing style, tone, and specific points of focus.
+3. Incorporate the name "${client.name}" and the specified keywords naturally.
 4. Respond ONLY with a valid, clean JSON object containing an array of strings under the key "reviews". Example:
 {
   "reviews": [
-    "I had an absolutely fantastic experience at ${client.name}. The staff is highly professional and their attention to detail during my treatment was outstanding. If you are looking for top-notch care, this is definitely the place to go!",
-    "Highly recommend ${client.name}! From the moment I walked in, I felt welcomed and well cared for. Their expertise is unmatched and the results speak for themselves.",
-    "Very pleased with the service at ${client.name}. Clean facility, friendly environment, and excellent communication throughout my visit. Five stars all the way!"
+    "I had a fantastic experience at ${client.name}. The staff is highly professional and the service was outstanding!",
+    "Highly recommend ${client.name}! Genuinely friendly environment and excellent attention to detail.",
+    "Very pleased with the service at ${client.name}. Quick, professional, and excellent communication throughout!"
   ]
 }`;
 
-  // Fallback models list on OpenRouter (tries free first, falls back to cheap paid models on 429 rate limits)
+  // Dynamically obtain the working model cached for 30 minutes
+  const activeModel = await getWorkingModel(env);
   const models = [
-    "meta-llama/llama-3.3-70b-instruct:free", // New premium free model (highly reliable when active)
-    "meta-llama/llama-3.2-3b-instruct:free",  // Fast, lightweight free model
-    "deepseek/deepseek-chat",                 // DeepSeek V3 (Paid, extremely cheap and smart, high uptime)
-    "meta-llama/llama-3.3-70b-instruct",      // Low-cost paid Llama 3.3 70B
-    "meta-llama/llama-3.2-3b-instruct"        // Extremely cheap paid Llama 3.2 3B
-  ];
+    activeModel,
+    "meta-llama/llama-3.2-3b-instruct:free",
+    "meta-llama/llama-3.3-70b-instruct:free",
+    "nvidia/nemotron-3-ultra-550b-a55b:free"
+  ].filter((v, i, a) => a.indexOf(v) === i); // Remove duplicates
 
   let responseText = null;
 
@@ -350,22 +402,54 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
       } else if (suggestionType === 'custom' && customSuggestions.length > 0) {
         examples = customSuggestions;
       } else if (suggestionType === 'ai') {
-        // --- DIRECT LIVE API QUERY (NO CACHE) ---
-        if (env.OPENROUTER_API_KEY) {
-          try {
-            const freshExamples = await generateAISuggestions(env, client, customSuggestions);
-            if (freshExamples && freshExamples.length > 0) {
-              examples = freshExamples;
-            } else {
+        // --- LIGHTWEIGHT STALE-WHILE-REVALIDATE CACHE ---
+        const hasCache = client.cached_suggestions && Array.isArray(client.cached_suggestions) && client.cached_suggestions.length > 0;
+
+        if (hasCache) {
+          // ⚡ Serve from cache instantly
+          examples = [...client.cached_suggestions].sort(() => 0.5 - Math.random());
+
+          // 🔁 Asynchronously generate next set in background (no user wait)
+          ctx.waitUntil((async () => {
+            try {
+              const freshExamples = await generateAISuggestions(env, client, customSuggestions);
+              if (freshExamples && freshExamples.length > 0) {
+                await supabaseAdmin.from('review_clients').update({
+                  cached_suggestions: freshExamples,
+                  suggestions_cached_at: new Date().toISOString(),
+                  suggestions_used_at: new Date().toISOString()
+                }).eq('id', clientId);
+                console.log(`[Submit] Background cache refresh done for ${client.name}`);
+              }
+            } catch (bgErr) {
+              console.error(`[Submit] Background cache refresh failed for ${client.name}:`, bgErr.message);
+            }
+          })());
+
+        } else {
+          // No cache (first load) — generate synchronously
+          if (env.OPENROUTER_API_KEY) {
+            try {
+              const freshExamples = await generateAISuggestions(env, client, customSuggestions);
+              if (freshExamples && freshExamples.length > 0) {
+                examples = freshExamples;
+
+                // Save to cache
+                await supabaseAdmin.from('review_clients').update({
+                  cached_suggestions: examples,
+                  suggestions_cached_at: new Date().toISOString(),
+                  suggestions_used_at: new Date().toISOString()
+                }).eq('id', clientId);
+              } else {
+                examples = generateLocalSuggestions(client.name, client.ai_keywords);
+              }
+            } catch (aiErr) {
+              console.error("OpenRouter integration error:", aiErr);
               examples = generateLocalSuggestions(client.name, client.ai_keywords);
             }
-          } catch (aiErr) {
-            console.error("OpenRouter integration error:", aiErr);
+          } else {
             examples = generateLocalSuggestions(client.name, client.ai_keywords);
           }
-        } else {
-          // No API key — use local generator
-          examples = generateLocalSuggestions(client.name, client.ai_keywords);
         }
       }
 
