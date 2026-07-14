@@ -16,46 +16,114 @@ function generateLocalSuggestions(businessName, keywordsStr) {
   ];
 }
 
-// Shared AI suggestion generator — used by /submit (background refresh) and cron
+// Shared AI suggestion generator — used by /submit (sync and background) and cron
 async function generateAISuggestions(env, client, customSuggestions = []) {
   if (!env.OPENROUTER_API_KEY) return null;
-  try {
-    let guidanceTemplate = '';
-    if (customSuggestions.length > 0) {
-      const randomIndex = Math.floor(Math.random() * customSuggestions.length);
-      guidanceTemplate = ` Use this user-provided example template as a reference for tone/style: "${customSuggestions[randomIndex]}".`;
-    }
-    const systemPrompt = `You are an AI assistant helping a customer write a genuine, positive Google review for a business named "${client.name}". The business has specified these keywords that MUST be woven into the reviews: ${client.ai_keywords || 'excellent service'}.${guidanceTemplate} Generate exactly 3 to 4 distinct, natural-sounding, positive (5-star) review variations that naturally weave in the business name "${client.name}" and explicitly use one or more of these keywords in each variation. Make them feel written by different human customers. Critically, VARY the length of each variation: make one very short (1 sentence), one medium (2 sentences), and one more detailed (3 sentences). Respond ONLY with a valid JSON object containing an array of strings in the key "reviews". Example: {"reviews": ["variation 1", "variation 2", "variation 3"]}`;
-    const randomSeed = Math.floor(Math.random() * 1000000);
-    const aiRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${env.OPENROUTER_API_KEY}`,
-        'HTTP-Referer': 'https://certifyied.com',
-        'X-Title': 'Certifyied Review Funnel'
-      },
-      body: JSON.stringify({
-        model: 'nvidia/nemotron-3-ultra-550b-a55b:free',
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: `Generate positive reviews for: ${client.ai_keywords || ''} (Seed: ${randomSeed})` }
-        ],
-        temperature: 0.9,
-        seed: randomSeed,
-        response_format: { type: 'json_object' }
-      })
-    });
-    if (!aiRes.ok) return null;
-    const aiData = await aiRes.json();
-    const text = aiData.choices?.[0]?.message?.content;
-    if (!text) return null;
-    const parsed = JSON.parse(text);
-    return parsed.reviews || parsed.examples || (Array.isArray(parsed) ? parsed : null);
-  } catch (e) {
-    console.error('[generateAISuggestions] Error:', e.message);
-    return null;
+
+  const keywordsList = (client.ai_keywords || '')
+    .split(',')
+    .map(k => k.trim())
+    .filter(Boolean);
+
+  let guidanceTemplate = '';
+  const actualCustomSuggestions = customSuggestions.length > 0 ? customSuggestions : (client.custom_suggestions || []);
+  if (actualCustomSuggestions.length > 0) {
+    const randomIndex = Math.floor(Math.random() * actualCustomSuggestions.length);
+    guidanceTemplate = ` Use this user-provided example template as a reference for tone/style: "${actualCustomSuggestions[randomIndex]}".`;
   }
+
+  // Premium detailed prompt to ensure highly personalized, detailed, and realistic reviews.
+  const systemPrompt = `You are a professional local SEO copywriter and customer experience assistant helping a client write a genuine, enthusiastic, and highly detailed Google review for a business named "${client.name}".
+The business has specified these high-value, SEO-targeted keywords which MUST be woven naturally and contextually into the review variations:
+${keywordsList.length > 0 ? keywordsList.map(kw => `- ${kw}`).join('\n') : '- excellent service'}
+
+${guidanceTemplate}
+
+Generate exactly 3 to 4 distinct, premium, natural-sounding, positive (5-star) review variations.
+Guidelines:
+1. DO NOT make the reviews too short. Each review variation should be a detailed, rich paragraph consisting of 2 to 4 complete, well-structured sentences (between 30 to 70 words per review).
+2. The reviews must feel 100% written by different real human customers. Vary their writing style, tone, and specific points of focus:
+   - Variation 1: Focus heavily on the professionalism, staff quality, and specific specialized services (weaving in keywords).
+   - Variation 2: Focus on the excellent customer journey, ease of booking/visit, clean premium facility, and overall peace of mind.
+   - Variation 3: Focus on the long-term results, value, and a strong recommendation to friends/family.
+   - Variation 4 (if generated): A comprehensive review detailing a first-class overall experience.
+3. Incorporate the name "${client.name}" and the specified keywords naturally. Avoid "keyword stuffing" — the keywords should blend in seamlessly as if a real customer naturally described their experience.
+4. Respond ONLY with a valid, clean JSON object containing an array of strings under the key "reviews". Example:
+{
+  "reviews": [
+    "I had an absolutely fantastic experience at ${client.name}. The staff is highly professional and their attention to detail during my treatment was outstanding. If you are looking for top-notch care, this is definitely the place to go!",
+    "Highly recommend ${client.name}! From the moment I walked in, I felt welcomed and well cared for. Their expertise is unmatched and the results speak for themselves.",
+    "Very pleased with the service at ${client.name}. Clean facility, friendly environment, and excellent communication throughout my visit. Five stars all the way!"
+  ]
+}`;
+
+  // Fallback models list on OpenRouter
+  const models = [
+    "qwen/qwen-2.5-72b-instruct:free",
+    "meta-llama/llama-3-8b-instruct:free",
+    "google/gemma-2-9b-it:free",
+    "nvidia/nemotron-3-ultra-550b-a55b:free"
+  ];
+
+  let responseText = null;
+
+  for (const model of models) {
+    try {
+      const randomSeed = Math.floor(Math.random() * 1000000);
+      const aiRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${env.OPENROUTER_API_KEY}`,
+          'HTTP-Referer': 'https://certifyied.com',
+          'X-Title': 'Certifyied Review Funnel'
+        },
+        body: JSON.stringify({
+          model: model,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: `Generate positive reviews utilizing keywords: ${client.ai_keywords || ''} (Request ID: ${randomSeed})` }
+          ],
+          temperature: 0.85,
+          seed: randomSeed,
+          response_format: { type: 'json_object' }
+        })
+      });
+
+      if (aiRes.ok) {
+        const aiData = await aiRes.json();
+        responseText = aiData.choices?.[0]?.message?.content;
+        if (responseText) {
+          console.log(`[generateAISuggestions] Successfully generated using model: ${model}`);
+          break;
+        }
+      } else {
+        console.warn(`[generateAISuggestions] Model ${model} returned status: ${aiRes.status}`);
+      }
+    } catch (modelErr) {
+      console.error(`[generateAISuggestions] Fetch failed for model ${model}:`, modelErr.message);
+    }
+  }
+
+  if (!responseText) return null;
+
+  // Robust JSON extractor and parser
+  try {
+    let cleanText = responseText.trim();
+    const match = cleanText.match(/\{[\s\S]*\}/);
+    if (match) {
+      cleanText = match[0];
+    }
+    const parsed = JSON.parse(cleanText);
+    const result = parsed.reviews || parsed.examples || (Array.isArray(parsed) ? parsed : null);
+    if (Array.isArray(result) && result.length > 0) {
+      return result;
+    }
+  } catch (parseErr) {
+    console.error(`[generateAISuggestions] JSON parsing failed for response: ${responseText.substring(0, 150)}... Error: ${parseErr.message}`);
+  }
+
+  return null;
 }
 
 
@@ -130,7 +198,7 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
   // POST Submit Review (Feedbacks / Gatekeeper)
   if (path === '/adminApiBlog/api/reviews/public/submit' && method === 'POST') {
     try {
-      const { clientId, rating, reviewer_name, reviewer_email, comment, draft } = await request.json();
+      const { clientId, rating, reviewer_name, reviewer_email, comment, draft, refresh } = await request.json();
 
       if (!clientId || !rating) {
         return new Response(JSON.stringify({ error: "clientId and rating are required." }), { 
@@ -204,62 +272,40 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
       if (rating <= 3) {
         if (!draft && client.email) {
           try {
-            const apiKey = env.RESEND_API_KEY;
-            if (apiKey) {
+            if (env.RESEND_API_KEY) {
               await fetch('https://api.resend.com/emails', {
                 method: 'POST',
                 headers: {
                   'Content-Type': 'application/json',
-                  'Authorization': `Bearer ${apiKey}`,
+                  'Authorization': `Bearer ${env.RESEND_API_KEY}`,
                 },
                 body: JSON.stringify({
-                  from: 'Review Manager <no-reply@send.certifyied.com>',
+                  from: 'Review Manager Alerts <alerts@send.certifyied.com>',
                   to: [client.email],
-                  subject: `⚠️ Alert: New Negative Feedback Received for ${client.name}`,
+                  subject: `⚠️ Negative Feedback Alert: ${client.name}`,
                   html: `
-                    <div style="font-family: sans-serif; max-width: 600px; margin: auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 12px; background-color: #ffffff; color: #334155;">
-                      <h2 style="color: #ef4444; font-weight: 700; margin-top: 0; margin-bottom: 16px;">New Negative Feedback Alert</h2>
-                      <p style="font-size: 15px; line-height: 1.6;">
-                        Hello <strong>${client.name}</strong>,
-                      </p>
-                      <p style="font-size: 15px; line-height: 1.6;">
-                        A customer has submitted a low rating (<strong>${rating} out of 5 stars</strong>) on your feedback funnel. Since this rating was 3 stars or below, we intercepted it and saved it internally so you can follow up with them directly.
+                    <div style="font-family: sans-serif; padding: 24px; max-width: 600px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 8px; background-color: #ffffff;">
+                      <h2 style="color: #e11d48; margin-top: 0;">Negative Customer Feedback</h2>
+                      <p style="font-size: 16px; color: #334155;">
+                        A customer has submitted a <strong>${rating}-star</strong> rating for <strong>${client.name}</strong>. Below are the details:
                       </p>
                       
-                      <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px; margin: 24px 0;">
-                        <h4 style="margin: 0 0 12px; color: #1e293b; font-size: 14px; text-transform: uppercase; letter-spacing: 0.5px;">Feedback Details</h4>
-                        <table style="width: 100%; border-collapse: collapse; font-size: 14px; color: #475569;">
+                      <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 16px; margin: 20px 0;">
+                        <table style="width: 100%; border-collapse: collapse;">
                           <tr>
                             <td style="padding: 4px 0; font-weight: 600; width: 120px;">Customer Name:</td>
                             <td style="padding: 4px 0;">${reviewer_name || 'Anonymous'}</td>
                           </tr>
                           <tr>
-                            <td style="padding: 4px 0; font-weight: 600;">Customer Email:</td>
+                            <td style="padding: 4px 0; font-weight: 600;">Email:</td>
                             <td style="padding: 4px 0;">${reviewer_email || 'Not provided'}</td>
                           </tr>
                           <tr>
                             <td style="padding: 4px 0; font-weight: 600;">Rating:</td>
                             <td style="padding: 4px 0; color: #f59e0b;">${'★'.repeat(rating)}${'☆'.repeat(5 - rating)} (${rating}/5)</td>
                           </tr>
-                          ${comment ? `
-                          <tr>
-                            <td style="padding: 8px 0 4px; font-weight: 600; vertical-align: top;">Comment:</td>
-                            <td style="padding: 8px 0 4px; font-style: italic; color: #334155; line-height: 1.5;">"${comment}"</td>
-                          </tr>
-                          ` : ''}
+                          ${comment ? `<tr><td style="padding: 4px 0; font-weight: 600;">Comment:</td><td style="padding: 4px 0;">"${comment}"</td></tr>` : ''}
                         </table>
-                      </div>
-
-                       <p style="font-size: 15px; line-height: 1.6;">
-                        We recommend reaching out to this customer as soon as possible to resolve their concerns and prevent any negative public reviews.
-                      </p>
-
-                      <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 24px 0;" />
-                      <div style="text-align: center;">
-                        <img src="https://www.reviewmanager.in/favicon.ico" alt="Review Manager Logo" style="height: 32px; width: auto; margin-bottom: 8px;" />
-                        <p style="color: #94a3b8; font-size: 12px; margin: 0;">
-                          This is an automated notification from Review Manager.
-                        </p>
                       </div>
                     </div>
                   `,
@@ -307,7 +353,8 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
         const CACHE_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours
         const hasFreshCache = client.cached_suggestions && Array.isArray(client.cached_suggestions) && client.cached_suggestions.length > 0 && cacheAgeMs < CACHE_TTL_MS;
 
-        if (hasFreshCache) {
+        // Bypass cache check if "refresh: true" is requested
+        if (hasFreshCache && !refresh) {
           // ✅ Serve from cache instantly — shuffle for variety
           examples = [...client.cached_suggestions].sort(() => 0.5 - Math.random());
 
@@ -325,7 +372,7 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
             // Fire-and-forget: regenerate in background
             ;(async () => {
               try {
-                const freshExamples = await generateAISuggestions(env, client);
+                const freshExamples = await generateAISuggestions(env, client, customSuggestions);
                 if (freshExamples && freshExamples.length > 0) {
                   await supabaseAdmin.from('review_clients').update({
                     cached_suggestions: freshExamples,
@@ -342,78 +389,35 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
           }
 
         } else {
-          // Cache is stale or missing — generate fresh AI suggestions synchronously
+          // Cache is stale, missing, or "refresh: true" is requested — generate fresh AI suggestions synchronously
           if (env.OPENROUTER_API_KEY) {
-          // Call OpenRouter API if API key exists
-          try {
-            let guidanceTemplate = "";
-            if (customSuggestions.length > 0) {
-              const randomIndex = Math.floor(Math.random() * customSuggestions.length);
-              guidanceTemplate = ` Use this user-provided example template as a reference for tone/style: "${customSuggestions[randomIndex]}".`;
-            }
-            
-            const systemPrompt = `You are an AI assistant helping a customer write a genuine, positive Google review for a business named "${client.name}". The business has specified these keywords that MUST be woven into the reviews: ${client.ai_keywords || 'excellent service'}.${guidanceTemplate} Generate exactly 3 to 4 distinct, natural-sounding, positive (5-star) review variations that naturally weave in the business name "${client.name}" and explicitly use one or more of these keywords in each variation. Make them feel written by different human customers. Critically, VARY the length of each variation: make one very short (1 sentence), one medium (2 sentences), and one more detailed (3 sentences). Vary the tone and length styles so they are not the same size. Respond ONLY with a valid JSON object containing an array of strings in the key "reviews". Example: {"reviews": ["variation 1", "variation 2", "variation 3"]}`;
+            try {
+              const freshExamples = await generateAISuggestions(env, client, customSuggestions);
+              if (freshExamples && freshExamples.length > 0) {
+                examples = freshExamples;
 
-             // Generate a random seed/salt to prevent OpenRouter/provider response caching
-             const randomSeed = Math.floor(Math.random() * 1000000);
-
-             const aiRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${env.OPENROUTER_API_KEY}`,
-                'HTTP-Referer': 'https://certifyied.com',
-                'X-Title': 'Certifyied Review Funnel'
-              },
-              body: JSON.stringify({
-                model: 'nvidia/nemotron-3-ultra-550b-a55b:free',
-                messages: [
-                  { role: 'system', content: systemPrompt },
-                  { role: 'user', content: `Generate positive reviews utilizing keywords: ${client.ai_keywords || ''} (Request ID: ${randomSeed})` }
-                ],
-                temperature: 0.85,
-                seed: randomSeed,
-                response_format: { type: 'json_object' }
-              })
-            });
-
-            if (aiRes.ok) {
-              const aiData = await aiRes.json();
-              const responseText = aiData.choices?.[0]?.message?.content;
-              if (responseText) {
-                const parsed = JSON.parse(responseText);
-                if (parsed.reviews && Array.isArray(parsed.reviews)) {
-                  examples = parsed.reviews;
-                } else if (parsed.examples && Array.isArray(parsed.examples)) {
-                  examples = parsed.examples;
-                } else if (Array.isArray(parsed)) {
-                  examples = parsed;
-                }
+                // Save fresh suggestions back to DB cache + mark used
+                supabaseAdmin.from('review_clients').update({
+                  cached_suggestions: examples,
+                  suggestions_cached_at: new Date().toISOString(),
+                  suggestions_used_at: new Date().toISOString()
+                }).eq('id', clientId).then(() => {}).catch(e => console.error('Cache write failed:', e));
+              } else {
+                examples = generateLocalSuggestions(client.name, client.ai_keywords);
+              }
+            } catch (aiErr) {
+              console.error("OpenRouter integration error:", aiErr);
+              // Fallback to cached suggestions if available, else local generation
+              if (client.cached_suggestions && client.cached_suggestions.length > 0) {
+                examples = client.cached_suggestions;
+              } else {
+                examples = generateLocalSuggestions(client.name, client.ai_keywords);
               }
             }
-
-            // Save fresh suggestions back to DB cache + mark used
-            if (examples.length > 0) {
-              supabaseAdmin.from('review_clients').update({
-                cached_suggestions: examples,
-                suggestions_cached_at: new Date().toISOString(),
-                suggestions_used_at: new Date().toISOString()
-              }).eq('id', clientId).then(() => {}).catch(e => console.error('Cache write failed:', e));
-            }
-
-          } catch (aiErr) {
-            console.error("OpenRouter integration error:", aiErr);
-            // Fallback to cached suggestions if available, else local generation
-            if (client.cached_suggestions && client.cached_suggestions.length > 0) {
-              examples = client.cached_suggestions;
-            } else {
-              examples = generateLocalSuggestions(client.name, client.ai_keywords);
-            }
+          } else {
+            // No API key — use local generator
+            examples = generateLocalSuggestions(client.name, client.ai_keywords);
           }
-        } else {
-          // No API key — use local generator
-          examples = generateLocalSuggestions(client.name, client.ai_keywords);
-        }
         } // end cache else block
       }
 
