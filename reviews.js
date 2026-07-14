@@ -367,7 +367,7 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
             // Mark as used so cron knows context
             supabaseAdmin.from('review_clients').update({
               suggestions_used_at: new Date().toISOString()
-            }).eq('id', clientId).catch(e => console.error('suggestions_used_at write failed:', e));
+            }).eq('id', clientId).then(() => {}).catch(e => console.error('suggestions_used_at write failed:', e));
 
             // Fire-and-forget: regenerate in background
             ;(async () => {
