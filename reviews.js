@@ -59,13 +59,13 @@ Guidelines:
   ]
 }`;
 
-  // Fallback models list on OpenRouter (using active, valid free models)
+  // Fallback models list on OpenRouter (tries free first, falls back to cheap paid models on 429 rate limits)
   const models = [
-    "meta-llama/llama-3.3-70b-instruct:free", // New premium free model (highly reliable)
+    "meta-llama/llama-3.3-70b-instruct:free", // New premium free model (highly reliable when active)
     "meta-llama/llama-3.2-3b-instruct:free",  // Fast, lightweight free model
-    "nvidia/nemotron-3-ultra-550b-a55b:free",  // Fallback free model
-    "qwen/qwen-2.5-72b-instruct:free",
-    "google/gemma-2-9b-it:free"
+    "deepseek/deepseek-chat",                 // DeepSeek V3 (Paid, extremely cheap and smart, high uptime)
+    "meta-llama/llama-3.3-70b-instruct",      // Low-cost paid Llama 3.3 70B
+    "meta-llama/llama-3.2-3b-instruct"        // Extremely cheap paid Llama 3.2 3B
   ];
 
   let responseText = null;
@@ -350,85 +350,23 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
       } else if (suggestionType === 'custom' && customSuggestions.length > 0) {
         examples = customSuggestions;
       } else if (suggestionType === 'ai') {
-        // --- DB CACHE CHECK ---
-        const cachedAt = client.suggestions_cached_at ? new Date(client.suggestions_cached_at) : null;
-        const cacheAgeMs = cachedAt ? (Date.now() - cachedAt.getTime()) : Infinity;
-        const CACHE_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours
-        const hasFreshCache = client.cached_suggestions && Array.isArray(client.cached_suggestions) && client.cached_suggestions.length > 0 && cacheAgeMs < CACHE_TTL_MS;
-
-        const usedAt = client.suggestions_used_at ? new Date(client.suggestions_used_at) : null;
-        const usedAgeMs = usedAt ? (Date.now() - usedAt.getTime()) : Infinity;
-
-        // If the cache was already served very recently (< 5 minutes ago) to this or another customer,
-        // we bypass the cache and fetch fresh AI suggestions directly from the live API.
-        // Also bypasses cache on explicit "refresh" request or if refreshCount is > 0 (subsequent tab requests).
-        const isCacheUsable = hasFreshCache && usedAgeMs > 5 * 60 * 1000 && !refresh && (!refreshCount || refreshCount === 0);
-
-        if (isCacheUsable) {
-          // ✅ Serve from cache instantly — shuffle for variety
-          examples = [...client.cached_suggestions].sort(() => 0.5 - Math.random());
-
-          // Mark suggestions_used_at = now in background, so subsequent requests within 5 mins bypass cache
-          supabaseAdmin.from('review_clients').update({
-            suggestions_used_at: new Date().toISOString()
-          }).eq('id', clientId).then(() => {}).catch(e => console.error('suggestions_used_at write failed:', e));
-
-          // 🔁 Only trigger background regeneration if cache is >30 min old
-          // Prevents an AI call on every single visit — cooldown guard
-          const REFRESH_COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes
-          const needsBackgroundRefresh = cacheAgeMs > REFRESH_COOLDOWN_MS;
-
-          if (needsBackgroundRefresh) {
-            // Fire-and-forget: regenerate in background
-            ;(async () => {
-              try {
-                const freshExamples = await generateAISuggestions(env, client, customSuggestions);
-                if (freshExamples && freshExamples.length > 0) {
-                  await supabaseAdmin.from('review_clients').update({
-                    cached_suggestions: freshExamples,
-                    suggestions_cached_at: new Date().toISOString()
-                  }).eq('id', clientId);
-                  console.log(`[Submit] Background refresh done for ${client.name} (cache was ${Math.round(cacheAgeMs / 60000)}min old)`);
-                }
-              } catch (bgErr) {
-                console.error(`[Submit] Background refresh failed for ${client.name}:`, bgErr.message);
-              }
-            })();
-          } else {
-            console.log(`[Submit] Cache is fresh (${Math.round(cacheAgeMs / 60000)}min old) — skipping background refresh for ${client.name}`);
-          }
-
-        } else {
-          // Cache is stale, missing, force-refreshed, or recently served — generate fresh AI suggestions synchronously
-          if (env.OPENROUTER_API_KEY) {
-            try {
-              const freshExamples = await generateAISuggestions(env, client, customSuggestions);
-              if (freshExamples && freshExamples.length > 0) {
-                examples = freshExamples;
-
-                // Save fresh suggestions back to DB cache + mark used
-                supabaseAdmin.from('review_clients').update({
-                  cached_suggestions: examples,
-                  suggestions_cached_at: new Date().toISOString(),
-                  suggestions_used_at: new Date().toISOString()
-                }).eq('id', clientId).then(() => {}).catch(e => console.error('Cache write failed:', e));
-              } else {
-                examples = generateLocalSuggestions(client.name, client.ai_keywords);
-              }
-            } catch (aiErr) {
-              console.error("OpenRouter integration error:", aiErr);
-              // Fallback to cached suggestions if available, else local generation
-              if (client.cached_suggestions && client.cached_suggestions.length > 0) {
-                examples = client.cached_suggestions;
-              } else {
-                examples = generateLocalSuggestions(client.name, client.ai_keywords);
-              }
+        // --- DIRECT LIVE API QUERY (NO CACHE) ---
+        if (env.OPENROUTER_API_KEY) {
+          try {
+            const freshExamples = await generateAISuggestions(env, client, customSuggestions);
+            if (freshExamples && freshExamples.length > 0) {
+              examples = freshExamples;
+            } else {
+              examples = generateLocalSuggestions(client.name, client.ai_keywords);
             }
-          } else {
-            // No API key — use local generator
+          } catch (aiErr) {
+            console.error("OpenRouter integration error:", aiErr);
             examples = generateLocalSuggestions(client.name, client.ai_keywords);
           }
-        } // end cache else block
+        } else {
+          // No API key — use local generator
+          examples = generateLocalSuggestions(client.name, client.ai_keywords);
+        }
       }
 
       return new Response(JSON.stringify({
