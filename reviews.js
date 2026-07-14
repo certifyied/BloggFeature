@@ -11,14 +11,14 @@ function generateLocalSuggestions(businessName, keywordsStr) {
   const k4 = keywords[3] || keywords[1] || defaultKeywords[0];
 
   const pool = [
-    `TEST 1: Outstanding service at ${businessName}! The team is extremely professional and they offer ${k1}. Had a very smooth experience.`,
-    `TEST 2: I highly recommend ${businessName}! The staff is genuinely friendly and did an amazing job with ${k2}. Will definitely return!`,
-    `TEST 3: Top-notch quality and support at ${businessName}. Professional environment and great attention to ${k3}. 5 stars!`,
-    `TEST 4: Extremely pleased with my visit to ${businessName}. Their expertise in ${k4} is outstanding and the customer care is amazing.`,
-    `TEST 5: Best experience ever at ${businessName}! Highly skilled team, clean facilities, and excellent support for ${k1}.`,
-    `TEST 6: Very professional and reliable service at ${businessName}. They made sure I was comfortable and did a great job with ${k2}.`,
-    `TEST 7: Highly recommend ${businessName} to everyone! They went above and beyond with ${k3} and exceeded my expectations.`,
-    `TEST 8: Super friendly staff and top-quality care at ${businessName}. Truly the best place for ${k4}!`
+    `Outstanding service at ${businessName}! The team is extremely professional and they offer ${k1}. Had a very smooth experience.`,
+    `I highly recommend ${businessName}! The staff is genuinely friendly and did an amazing job with ${k2}. Will definitely return!`,
+    `Top-notch quality and support at ${businessName}. Professional environment and great attention to ${k3}. 5 stars!`,
+    `Extremely pleased with my visit to ${businessName}. Their expertise in ${k4} is outstanding and the customer care is amazing.`,
+    `Best experience ever at ${businessName}! Highly skilled team, clean facilities, and excellent support for ${k1}.`,
+    `Very professional and reliable service at ${businessName}. They made sure I was comfortable and did a great job with ${k2}.`,
+    `Highly recommend ${businessName} to everyone! They went above and beyond with ${k3} and exceeded my expectations.`,
+    `Super friendly staff and top-quality care at ${businessName}. Truly the best place for ${k4}!`
   ];
 
   // Pick 3 random unique templates from the pool
