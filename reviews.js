@@ -4,15 +4,17 @@ function generateLocalSuggestions(businessName, keywordsStr) {
     .map(k => k.trim())
     .filter(Boolean);
     
-  const defaultKeywords = ['excellent service', 'friendly staff', 'great quality'];
+  const defaultKeywords = ['excellent service', 'friendly staff', 'great support'];
   const k1 = keywords[0] || defaultKeywords[0];
   const k2 = keywords[1] || defaultKeywords[1];
   const k3 = keywords[2] || keywords[0] || defaultKeywords[2];
+  const k4 = keywords[3] || keywords[1] || defaultKeywords[0];
 
   return [
-    `Outstanding service at ${businessName}! The team is extremely professional and they offer ${k1}. Had a very smooth experience.`,
-    `I highly recommend ${businessName}! They have ${k2} and the overall quality is top-notch. Very satisfied with my experience.`,
-    `Great attention to detail and ${k3}. ${businessName} is my go-to place now, thank you for the amazing support!`
+    `Outstanding experience at ${businessName}! The entire team was incredibly professional, welcoming, and attentive. They made sure all my needs were met and their expertise in ${k1} was very impressive. Highly recommend them to anyone looking for premium service.`,
+    `I am extremely satisfied with my visit to ${businessName}. The facility is clean and modern, and the staff is genuinely friendly. They took the time to explain everything and did an amazing job with ${k2}. Will definitely be returning!`,
+    `From start to finish, the service at ${businessName} was top-notch. Their attention to detail and dedication to providing high-quality care is clear. If you need reliable assistance with ${k3}, this is absolutely the best place in town.`,
+    `Highly recommend ${businessName}! They went above and beyond to ensure a smooth, comfortable visit. The staff's expertise in ${k4} is outstanding and the results exceeded my expectations. Thank you for the wonderful support!`
   ];
 }
 
@@ -57,12 +59,13 @@ Guidelines:
   ]
 }`;
 
-  // Fallback models list on OpenRouter
+  // Fallback models list on OpenRouter (using active, valid free models)
   const models = [
+    "meta-llama/llama-3.3-70b-instruct:free", // New premium free model (highly reliable)
+    "meta-llama/llama-3.2-3b-instruct:free",  // Fast, lightweight free model
+    "nvidia/nemotron-3-ultra-550b-a55b:free",  // Fallback free model
     "qwen/qwen-2.5-72b-instruct:free",
-    "meta-llama/llama-3-8b-instruct:free",
-    "google/gemma-2-9b-it:free",
-    "nvidia/nemotron-3-ultra-550b-a55b:free"
+    "google/gemma-2-9b-it:free"
   ];
 
   let responseText = null;
