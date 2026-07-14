@@ -102,7 +102,7 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
       
       const resQuery = await supabaseAdmin
         .from('review_clients')
-        .select('name, email, google_review_link, ai_keywords, suggestion_type, custom_suggestions, copy_mode')
+        .select('name, email, google_review_link, ai_keywords, suggestion_type, custom_suggestions, copy_mode, cached_suggestions, suggestions_cached_at')
         .eq('id', clientId)
         .maybeSingle();
 
@@ -258,7 +258,18 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
       } else if (suggestionType === 'custom' && customSuggestions.length > 0) {
         examples = customSuggestions;
       } else if (suggestionType === 'ai') {
-        if (env.OPENROUTER_API_KEY) {
+        // --- DB CACHE CHECK ---
+        // Serve from cache if it was generated within the last 2 hours
+        const cachedAt = client.suggestions_cached_at ? new Date(client.suggestions_cached_at) : null;
+        const cacheAgeMs = cachedAt ? (Date.now() - cachedAt.getTime()) : Infinity;
+        const CACHE_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours
+
+        if (client.cached_suggestions && Array.isArray(client.cached_suggestions) && client.cached_suggestions.length > 0 && cacheAgeMs < CACHE_TTL_MS) {
+          // Shuffle cached suggestions so they feel fresh each visit
+          examples = [...client.cached_suggestions].sort(() => 0.5 - Math.random());
+        } else {
+          // Cache is stale or missing — generate fresh AI suggestions
+          if (env.OPENROUTER_API_KEY) {
           // Call OpenRouter API if API key exists
           try {
             let guidanceTemplate = "";
@@ -306,15 +317,29 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
                 }
               }
             }
+
+            // Save fresh suggestions back to DB cache (fire-and-forget)
+            if (examples.length > 0) {
+              supabaseAdmin.from('review_clients').update({
+                cached_suggestions: examples,
+                suggestions_cached_at: new Date().toISOString()
+              }).eq('id', clientId).then(() => {}).catch(e => console.error('Cache write failed:', e));
+            }
+
           } catch (aiErr) {
             console.error("OpenRouter integration error:", aiErr);
-            // Fallback to local keyword suggestions on API error
-            examples = generateLocalSuggestions(client.name, client.ai_keywords);
+            // Fallback to cached suggestions if available, else local generation
+            if (client.cached_suggestions && client.cached_suggestions.length > 0) {
+              examples = client.cached_suggestions;
+            } else {
+              examples = generateLocalSuggestions(client.name, client.ai_keywords);
+            }
           }
         } else {
-          // If no API key is set up, dynamically generate customized keyword variations locally (zero cost)
+          // No API key — use local generator
           examples = generateLocalSuggestions(client.name, client.ai_keywords);
         }
+        } // end cache else block
       }
 
       return new Response(JSON.stringify({
