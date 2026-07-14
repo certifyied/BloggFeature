@@ -1068,3 +1068,131 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
 
   return null;
 }
+
+// ==========================================
+// CRON: Suggestion Cache Refresh (every 10 min)
+// ==========================================
+export async function refreshSuggestionCache(env, supabaseAdmin) {
+  try {
+    const CACHE_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours
+    const now = new Date();
+
+    // Fetch all AI-mode review_clients
+    const { data: clients, error } = await supabaseAdmin
+      .from('review_clients')
+      .select('id, name, ai_keywords, suggestion_type, custom_suggestions, cached_suggestions, suggestions_cached_at, suggestions_used_at')
+      .eq('suggestion_type', 'ai');
+
+    if (error || !clients || clients.length === 0) {
+      console.log('[CronCache] No AI-mode clients found or query error.');
+      return;
+    }
+
+    console.log(`[CronCache] Checking suggestion cache for ${clients.length} AI clients...`);
+
+    for (const client of clients) {
+      try {
+        const cachedAt = client.suggestions_cached_at ? new Date(client.suggestions_cached_at) : null;
+        const usedAt = client.suggestions_used_at ? new Date(client.suggestions_used_at) : null;
+        const cacheAgeMs = cachedAt ? (now.getTime() - cachedAt.getTime()) : Infinity;
+        const usedAgeMs = usedAt ? (now.getTime() - usedAt.getTime()) : Infinity;
+
+        // Conditions that trigger regeneration:
+        // 1. No cache at all
+        // 2. Cache is older than 2 hours (stale)
+        // 3. Suggestions were recently used (within last 20 minutes) — keep them fresh
+        const needsRefresh =
+          !client.cached_suggestions ||
+          !Array.isArray(client.cached_suggestions) ||
+          client.cached_suggestions.length === 0 ||
+          cacheAgeMs > CACHE_TTL_MS ||
+          usedAgeMs < 20 * 60 * 1000; // used within last 20 minutes → refresh
+
+        if (!needsRefresh) {
+          console.log(`[CronCache] Skipping ${client.name} — cache is fresh.`);
+          continue;
+        }
+
+        console.log(`[CronCache] Refreshing suggestions for: ${client.name}`);
+
+        let freshExamples = null;
+
+        if (env.OPENROUTER_API_KEY) {
+          const systemPrompt = `You are an AI assistant helping a customer write a genuine, positive Google review for a business named "${client.name}". The business has specified these keywords: ${client.ai_keywords || 'excellent service'}. Generate exactly 3 to 4 distinct, natural-sounding, positive (5-star) review variations. Make them feel written by different human customers. Vary length: one very short (1 sentence), one medium (2 sentences), one detailed (3 sentences). Respond ONLY with valid JSON: {"reviews": ["variation 1", "variation 2", "variation 3"]}`;
+
+          const randomSeed = Math.floor(Math.random() * 1000000);
+          const aiRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${env.OPENROUTER_API_KEY}`,
+              'HTTP-Referer': 'https://certifyied.com',
+              'X-Title': 'Certifyied Review Funnel'
+            },
+            body: JSON.stringify({
+              model: 'nvidia/nemotron-3-ultra-550b-a55b:free',
+              messages: [
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: `Generate positive reviews for: ${client.ai_keywords || ''} (Seed: ${randomSeed})` }
+              ],
+              temperature: 0.9,
+              seed: randomSeed,
+              response_format: { type: 'json_object' }
+            })
+          });
+
+          if (aiRes.ok) {
+            const aiData = await aiRes.json();
+            const text = aiData.choices?.[0]?.message?.content;
+            if (text) {
+              try {
+                const parsed = JSON.parse(text);
+                freshExamples = parsed.reviews || parsed.examples || (Array.isArray(parsed) ? parsed : null);
+              } catch (parseErr) {
+                console.error(`[CronCache] JSON parse failed for ${client.name}:`, parseErr.message);
+              }
+            }
+          } else {
+            console.warn(`[CronCache] OpenRouter returned ${aiRes.status} for ${client.name}`);
+          }
+        }
+
+        // If AI call failed or no key, generate local fallback
+        if (!freshExamples || freshExamples.length === 0) {
+          const name = client.name || 'this business';
+          const kw = client.ai_keywords || 'great service';
+          freshExamples = [
+            `Excellent experience at ${name}! The ${kw} really stood out. Highly recommend to everyone.`,
+            `Visited ${name} recently and was very impressed with the ${kw}. Will definitely come back!`,
+            `${name} offers outstanding ${kw}. The team was professional and friendly throughout. 5 stars!`
+          ];
+        }
+
+        // Write fresh suggestions back to DB cache
+        const { error: updateErr } = await supabaseAdmin
+          .from('review_clients')
+          .update({
+            cached_suggestions: freshExamples,
+            suggestions_cached_at: now.toISOString()
+          })
+          .eq('id', client.id);
+
+        if (updateErr) {
+          console.error(`[CronCache] DB update failed for ${client.name}:`, updateErr.message);
+        } else {
+          console.log(`[CronCache] ✅ Updated cache for ${client.name} (${freshExamples.length} suggestions)`);
+        }
+
+        // Small delay between clients to avoid rate limiting
+        await new Promise(r => setTimeout(r, 500));
+
+      } catch (clientErr) {
+        console.error(`[CronCache] Error processing ${client.name}:`, clientErr.message);
+      }
+    }
+
+    console.log('[CronCache] Suggestion cache refresh complete.');
+  } catch (err) {
+    console.error('[CronCache] Fatal error in refreshSuggestionCache:', err.message);
+  }
+}

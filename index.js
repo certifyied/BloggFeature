@@ -1,7 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 import { handleAuthRequest, verifyJWT } from './auth.js';
 import { handleBlogRequest } from './blogs.js';
-import { handleReviewRequest } from './reviews.js';
+import { handleReviewRequest, refreshSuggestionCache } from './reviews.js';
 import { handleAiRequest } from './ai.js';
 import { handleGoogleOauthRequest } from './google_oauth.js';
 import { handleAutoReplyRequest, scheduledSyncAllClients } from './autoreply.js';
@@ -52,7 +52,10 @@ export default {
       })
       : supabase;
 
-    ctx.waitUntil(scheduledSyncAllClients(env, supabaseAdmin));
+    ctx.waitUntil(Promise.all([
+      scheduledSyncAllClients(env, supabaseAdmin),
+      refreshSuggestionCache(env, supabaseAdmin)
+    ]));
   },
 
   async fetch(request, env, ctx) {
