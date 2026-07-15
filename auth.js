@@ -149,38 +149,39 @@ export async function handleAuthRequest(request, env, ctx, path, method, supabas
 
       if (isClientReviewsPortal || isReviewsAdminPortal) {
         // --- 1 & 2. REVIEWS PORTAL LOGINS (CLIENT OR ADMIN) ---
+        // A. Check if the user is an admin in admins first
         try {
-          const { data: clientUsers } = await supabaseAdmin
-            .from('review_clients')
-            .select('id, project_id')
-            .eq('email', email.toLowerCase());
+          const { data: adminUser } = await supabaseAdmin
+            .from('admins')
+            .select('role, project_id')
+            .eq('email', email.toLowerCase())
+            .maybeSingle();
 
-          if (clientUsers && clientUsers.length > 0) {
+          if (adminUser && (adminUser.role === 'admin' || adminUser.role === 'global')) {
             isAuthorized = true;
-            role = 'client';
-            clientId = clientUsers[0].id;
-            projectId = clientUsers[0].project_id;
+            role = adminUser.role;
+            projectId = adminUser.project_id;
           }
         } catch (e) {
-          console.error("review_clients lookup failed:", e.message);
+          console.error("Admins lookup failed:", e.message);
         }
 
-        // B. Check if the user is an admin in admins
+        // B. Check if the user is a client in review_clients
         if (!isAuthorized) {
           try {
-            const { data: adminUser } = await supabaseAdmin
-              .from('admins')
-              .select('role, project_id')
-              .eq('email', email.toLowerCase())
-              .maybeSingle();
+            const { data: clientUsers } = await supabaseAdmin
+              .from('review_clients')
+              .select('id, project_id')
+              .eq('email', email.toLowerCase());
 
-            if (adminUser && (adminUser.role === 'admin' || adminUser.role === 'global')) {
+            if (clientUsers && clientUsers.length > 0) {
               isAuthorized = true;
-              role = adminUser.role;
-              projectId = adminUser.project_id;
+              role = 'client';
+              clientId = clientUsers[0].id;
+              projectId = clientUsers[0].project_id;
             }
           } catch (e) {
-            console.error("Admins lookup failed:", e.message);
+            console.error("review_clients lookup failed:", e.message);
           }
         }
 
