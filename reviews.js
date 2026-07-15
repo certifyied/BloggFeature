@@ -1042,20 +1042,26 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
 
   // GET, POST, DELETE Slugs Management
   if (path === '/adminApiBlog/api/reviews/clients/slugs') {
+    let body = null;
+    if (method === 'POST') {
+      try {
+        body = await request.json();
+      } catch (e) {
+        console.error("Failed to parse request JSON body in slugs:", e);
+      }
+    }
+
     // Determine target client ID based on request or token
     let targetClientId = url.searchParams.get('clientId');
-    if (!targetClientId && method === 'POST') {
-      try {
-        const body = await request.clone().json();
-        targetClientId = body.clientId;
-      } catch (e) {}
+    if (!targetClientId && body) {
+      targetClientId = body.clientId;
     }
-    if (!targetClientId) {
+    if (!targetClientId && payload) {
       targetClientId = payload.clientId;
     }
 
-    const isAdmin = payload.role === 'admin' || payload.role === 'global';
-    const isAllowed = isAdmin || (payload.role === 'client' && payload.clientId === targetClientId);
+    const isAdmin = payload && (payload.role === 'admin' || payload.role === 'global');
+    const isAllowed = isAdmin || (payload && payload.role === 'client' && payload.clientId === targetClientId);
 
     if (!isAllowed || !targetClientId) {
       return new Response(JSON.stringify({ error: "Forbidden. Invalid permissions." }), { 
@@ -1095,7 +1101,7 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
     // POST Create Slug
     if (method === 'POST') {
       try {
-        const { slug } = await request.json();
+        const slug = body ? body.slug : null;
         if (!slug || typeof slug !== 'string') {
           return new Response(JSON.stringify({ error: "Slug is required." }), { 
             status: 400, 
