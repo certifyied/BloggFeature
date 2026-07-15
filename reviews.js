@@ -88,7 +88,7 @@ async function getWorkingModel(env) {
 }
 
 // Shared AI suggestion generator — used by /submit (sync and background) and cron
-async function generateAISuggestions(env, client, customSuggestions = [], count = 3) {
+async function generateAISuggestions(env, supabaseAdmin, client, customSuggestions = [], count = 3) {
   const provider = env.AI_PROVIDER || (env.NVIDIA_API_KEY ? 'nvidia' : 'openrouter');
   const apiKey = provider === 'nvidia' ? env.NVIDIA_API_KEY : env.OPENROUTER_API_KEY;
 
@@ -187,6 +187,24 @@ ${dummyJSON}`;
         responseText = aiData.choices?.[0]?.message?.content;
         if (responseText) {
           console.log(`[generateAISuggestions] Successfully generated using model: ${model} via ${provider}`);
+          
+          // Log call to audit_logs
+          try {
+            await supabaseAdmin.from('audit_logs').insert({
+              email: 'system_ai',
+              action: 'ai_call',
+              details: {
+                client_id: client.id,
+                client_name: client.name,
+                provider: provider,
+                model: model,
+                count: count
+              }
+            });
+          } catch (logErr) {
+            console.error("Failed to log AI call:", logErr);
+          }
+          
           break;
         }
       } else {
@@ -458,7 +476,7 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
               // 🔁 Threshold Check: If fewer than 5 suggestions are left, replenish the queue back to 20 suggestions in the background!
               if (remainingQueue.length < 5) {
                 console.log(`[Submit] Queue threshold reached (${remainingQueue.length} left). Triggering background replenishment for ${client.name}...`);
-                let freshExamples = await generateAISuggestions(env, client, customSuggestions, 20);
+                let freshExamples = await generateAISuggestions(env, supabaseAdmin, client, customSuggestions, 20);
                 if (freshExamples && freshExamples.length > 0) {
                   // Merge any leftovers and cap at 20 total suggestions
                   const replenishedQueue = [...remainingQueue, ...freshExamples].slice(0, 20);
@@ -485,7 +503,7 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
           // Fetch 20 fresh AI suggestions to fully populate the cache in the background
           ctx.waitUntil((async () => {
             try {
-              let freshExamples = await generateAISuggestions(env, client, customSuggestions, 20);
+              let freshExamples = await generateAISuggestions(env, supabaseAdmin, client, customSuggestions, 20);
               if (!freshExamples || freshExamples.length === 0) {
                 // Generate 20 local fallback suggestions if AI fails
                 freshExamples = [];
@@ -1052,6 +1070,62 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
   }
 
   // ==========================================
+  // 3b. ADMIN SYSTEM MONITORING ENDPOINT
+  // ==========================================
+  if (path === '/adminApiBlog/api/reviews/admin/monitoring') {
+    const isAdmin = payload && (payload.role === 'admin' || payload.role === 'global');
+    if (!isAdmin) {
+      return new Response(JSON.stringify({ error: "Forbidden. Invalid permissions." }), { 
+        status: 403, 
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+      });
+    }
+
+    try {
+      // Query recent logs
+      const { data: recentLogs, error: logsErr } = await supabaseAdmin
+        .from('audit_logs')
+        .select('*')
+        .in('action', ['ai_call', 'cron_run'])
+        .order('created_at', { ascending: false })
+        .limit(40);
+
+      if (logsErr) throw logsErr;
+
+      // Query total counts in last 30 days
+      const thirtyDaysAgo = new Date();
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+      const { count: aiCallsCount, error: countAiErr } = await supabaseAdmin
+        .from('audit_logs')
+        .select('*', { count: 'exact', head: true })
+        .eq('action', 'ai_call')
+        .gte('created_at', thirtyDaysAgo.toISOString());
+
+      const { count: cronRunsCount, error: countCronErr } = await supabaseAdmin
+        .from('audit_logs')
+        .select('*', { count: 'exact', head: true })
+        .eq('action', 'cron_run')
+        .gte('created_at', thirtyDaysAgo.toISOString());
+
+      return new Response(JSON.stringify({
+        recentLogs: recentLogs || [],
+        aiCallsCount: aiCallsCount || 0,
+        cronRunsCount: cronRunsCount || 0
+      }), { 
+        status: 200, 
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+      });
+
+    } catch (err) {
+      return new Response(JSON.stringify({ error: err.message }), { 
+        status: 500, 
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+      });
+    }
+  }
+
+  // ==========================================
   // 4. SHORT LINK SLUGS ENDPOINTS
   // ==========================================
 
@@ -1278,6 +1352,21 @@ export async function refreshSuggestionCache(env, supabaseAdmin) {
 
     console.log(`[CronCache] Checking suggestion cache for ${clients.length} AI clients...`);
 
+    // Log cron run
+    try {
+      await supabaseAdmin.from('audit_logs').insert({
+        email: 'system_cron',
+        action: 'cron_run',
+        details: {
+          type: 'suggestion_cache_refresh',
+          clients_checked: clients.length,
+          timestamp: now.toISOString()
+        }
+      });
+    } catch (logErr) {
+      console.error("[CronCache] Failed to log cron run:", logErr);
+    }
+
     for (const client of clients) {
       try {
         const cachedAt = client.suggestions_cached_at ? new Date(client.suggestions_cached_at) : null;
@@ -1305,7 +1394,7 @@ export async function refreshSuggestionCache(env, supabaseAdmin) {
         console.log(`[CronCache] Refreshing suggestions for: ${client.name}`);
 
         // Use shared AI helper to generate 20 suggestions (same logic as /submit queue replenishment)
-        let freshExamples = await generateAISuggestions(env, client, client.custom_suggestions || [], 20);
+        let freshExamples = await generateAISuggestions(env, supabaseAdmin, client, client.custom_suggestions || [], 20);
 
         // If AI call failed or no key, generate 20 local fallback suggestions
         if (!freshExamples || freshExamples.length === 0) {
