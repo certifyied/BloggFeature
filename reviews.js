@@ -89,7 +89,10 @@ async function getWorkingModel(env) {
 
 // Shared AI suggestion generator — used by /submit (sync and background) and cron
 async function generateAISuggestions(env, client, customSuggestions = []) {
-  if (!env.OPENROUTER_API_KEY) return null;
+  const provider = env.AI_PROVIDER || (env.NVIDIA_API_KEY ? 'nvidia' : 'openrouter');
+  const apiKey = provider === 'nvidia' ? env.NVIDIA_API_KEY : env.OPENROUTER_API_KEY;
+
+  if (!apiKey) return null;
 
   const keywordsList = (client.ai_keywords || '')
     .split(',')
@@ -124,55 +127,72 @@ Guidelines:
   ]
 }`;
 
-  // Dynamically obtain the working model cached for 30 minutes
-  const activeModel = await getWorkingModel(env);
-  const models = [
-    activeModel,
-    "nvidia/nemotron-3-ultra-550b-a55b:free",
-    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
-    "meta-llama/llama-3.3-70b-instruct:free",
-    "meta-llama/llama-3.2-3b-instruct:free",
-    "tencent/hy3:free",
-    "openai/gpt-oss-20b:free"
-  ].filter((v, i, a) => a.indexOf(v) === i); // Remove duplicates
+  let models = [];
+  let baseUrl = '';
+  let headers = {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${apiKey}`
+  };
+
+  if (provider === 'nvidia') {
+    baseUrl = 'https://integrate.api.nvidia.com/v1/chat/completions';
+    models = ["nvidia/nemotron-3-ultra-550b-a55b"];
+  } else {
+    baseUrl = 'https://openrouter.ai/api/v1/chat/completions';
+    headers['HTTP-Referer'] = 'https://certifyied.com';
+    headers['X-Title'] = 'Certifyied Review Funnel';
+    
+    // Dynamically obtain the working model cached for 30 minutes
+    const activeModel = await getWorkingModel(env);
+    models = [
+      activeModel,
+      "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+      "meta-llama/llama-3.3-70b-instruct:free",
+      "meta-llama/llama-3.2-3b-instruct:free",
+      "tencent/hy3:free",
+      "openai/gpt-oss-20b:free"
+    ].filter((v, i, a) => a.indexOf(v) === i); // Remove duplicates
+  }
 
   let responseText = null;
 
   for (const model of models) {
     try {
       const randomSeed = Math.floor(Math.random() * 1000000);
-      const aiRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      const requestBody = {
+        model: model,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: `Generate positive reviews utilizing keywords: ${client.ai_keywords || ''} (Request ID: ${randomSeed})` }
+        ],
+        temperature: 0.85,
+        response_format: { type: 'json_object' }
+      };
+
+      // Add seed for OpenRouter models
+      if (provider === 'openrouter') {
+        requestBody.seed = randomSeed;
+      }
+
+      const aiRes = await fetch(baseUrl, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${env.OPENROUTER_API_KEY}`,
-          'HTTP-Referer': 'https://certifyied.com',
-          'X-Title': 'Certifyied Review Funnel'
-        },
-        body: JSON.stringify({
-          model: model,
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: `Generate positive reviews utilizing keywords: ${client.ai_keywords || ''} (Request ID: ${randomSeed})` }
-          ],
-          temperature: 0.85,
-          seed: randomSeed,
-          response_format: { type: 'json_object' }
-        })
+        headers: headers,
+        body: JSON.stringify(requestBody)
       });
 
       if (aiRes.ok) {
         const aiData = await aiRes.json();
         responseText = aiData.choices?.[0]?.message?.content;
         if (responseText) {
-          console.log(`[generateAISuggestions] Successfully generated using model: ${model}`);
+          console.log(`[generateAISuggestions] Successfully generated using model: ${model} via ${provider}`);
           break;
         }
       } else {
-        console.warn(`[generateAISuggestions] Model ${model} returned status: ${aiRes.status}`);
+        console.warn(`[generateAISuggestions] Model ${model} via ${provider} returned status: ${aiRes.status}`);
       }
     } catch (modelErr) {
-      console.error(`[generateAISuggestions] Fetch failed for model ${model}:`, modelErr.message);
+      console.error(`[generateAISuggestions] Fetch failed for model ${model} via ${provider}:`, modelErr.message);
     }
   }
 
