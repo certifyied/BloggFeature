@@ -1061,7 +1061,23 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
     }
 
     const isAdmin = payload && (payload.role === 'admin' || payload.role === 'global');
-    const isAllowed = isAdmin || (payload && payload.role === 'client' && payload.clientId === targetClientId);
+    let isAllowed = isAdmin;
+
+    if (!isAllowed && payload && payload.role === 'client' && targetClientId) {
+      try {
+        const { data: matchedClient } = await supabaseAdmin
+          .from('review_clients')
+          .select('email')
+          .eq('id', targetClientId)
+          .maybeSingle();
+
+        if (matchedClient && matchedClient.email.toLowerCase() === payload.email.toLowerCase()) {
+          isAllowed = true;
+        }
+      } catch (err) {
+        console.error("Failed to verify client email ownership for slug:", err);
+      }
+    }
 
     if (!isAllowed || !targetClientId) {
       return new Response(JSON.stringify({ error: "Forbidden. Invalid permissions." }), { 
