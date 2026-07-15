@@ -88,7 +88,7 @@ async function getWorkingModel(env) {
 }
 
 // Shared AI suggestion generator — used by /submit (sync and background) and cron
-async function generateAISuggestions(env, client, customSuggestions = []) {
+async function generateAISuggestions(env, client, customSuggestions = [], count = 3) {
   const provider = env.AI_PROVIDER || (env.NVIDIA_API_KEY ? 'nvidia' : 'openrouter');
   const apiKey = provider === 'nvidia' ? env.NVIDIA_API_KEY : env.OPENROUTER_API_KEY;
 
@@ -106,6 +106,13 @@ async function generateAISuggestions(env, client, customSuggestions = []) {
     guidanceTemplate = ` Use this user-provided example template as a reference for tone/style: "${actualCustomSuggestions[randomIndex]}".`;
   }
 
+  // Generate dynamic array example formatting for the prompt based on the requested count
+  const dummyExamples = [];
+  for (let i = 0; i < Math.min(count, 3); i++) {
+    dummyExamples.push(`"Review variation ${i + 1} incorporating ${client.name} and keywords..."`);
+  }
+  const dummyJSON = `{\n  "reviews": [\n    ${dummyExamples.join(',\n    ')}\n  ]\n}`;
+
   // Concise prompt to ensure extremely fast model responses and short reviews.
   const systemPrompt = `You are a professional local SEO copywriter and customer experience assistant helping a client write a genuine, enthusiastic Google review for a business named "${client.name}".
 The business has specified these keywords which MUST be woven naturally and contextually into the review variations:
@@ -113,19 +120,13 @@ ${keywordsList.length > 0 ? keywordsList.map(kw => `- ${kw}`).join('\n') : '- ex
 
 ${guidanceTemplate}
 
-Generate exactly 3 distinct, positive (5-star) review variations.
+Generate exactly ${count} distinct, positive (5-star) review variations.
 Guidelines:
 1. Keep the reviews short and sweet. Each review variation must consist of exactly 1 to 2 short sentences (maximum 20 to 35 words or 150 characters per variation).
 2. The reviews must feel 100% written by different real human customers. Vary their writing style, tone, and specific points of focus.
 3. Incorporate the name "${client.name}" and the specified keywords naturally.
-4. Respond ONLY with a valid, clean JSON object containing an array of strings under the key "reviews". Example:
-{
-  "reviews": [
-    "I had a fantastic experience at ${client.name}. The staff is highly professional and the service was outstanding!",
-    "Highly recommend ${client.name}! Genuinely friendly environment and excellent attention to detail.",
-    "Very pleased with the service at ${client.name}. Quick, professional, and excellent communication throughout!"
-  ]
-}`;
+4. Respond ONLY with a valid, clean JSON object containing an array of strings under the key "reviews". Example output format for ${count} variations:
+${dummyJSON}`;
 
   let models = [];
   let baseUrl = '';
@@ -438,57 +439,72 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
       } else if (suggestionType === 'custom' && customSuggestions.length > 0) {
         examples = customSuggestions;
       } else if (suggestionType === 'ai') {
-        // --- LIGHTWEIGHT STALE-WHILE-REVALIDATE CACHE ---
-        const hasCache = client.cached_suggestions && Array.isArray(client.cached_suggestions) && client.cached_suggestions.length > 0;
+        // --- QUEUE BATCH CACHE SYSTEM ---
+        const cacheQueue = Array.isArray(client.cached_suggestions) ? client.cached_suggestions : [];
+        
+        if (cacheQueue.length >= 3) {
+          // ⚡ Serve the first 3 suggestions from the queue
+          examples = cacheQueue.slice(0, 3);
+          const remainingQueue = cacheQueue.slice(3);
 
-        if (hasCache) {
-          // ⚡ Serve from cache instantly
-          examples = [...client.cached_suggestions].sort(() => 0.5 - Math.random());
-
-          // 🔁 Asynchronously generate next set in background (no user wait)
+          // Update the queue in the database by removing the served items
           ctx.waitUntil((async () => {
             try {
-              let freshExamples = await generateAISuggestions(env, client, customSuggestions);
-              if (!freshExamples || freshExamples.length === 0) {
-                // If AI fails or is rate-limited, generate a fresh randomized local set to update the cache
-                freshExamples = generateLocalSuggestions(client.name, client.ai_keywords);
+              await supabaseAdmin.from('review_clients').update({
+                cached_suggestions: remainingQueue,
+                suggestions_used_at: new Date().toISOString()
+              }).eq('id', clientId);
+
+              // 🔁 Threshold Check: If fewer than 5 suggestions are left, replenish the queue back to 20 suggestions in the background!
+              if (remainingQueue.length < 5) {
+                console.log(`[Submit] Queue threshold reached (${remainingQueue.length} left). Triggering background replenishment for ${client.name}...`);
+                let freshExamples = await generateAISuggestions(env, client, customSuggestions, 20);
+                if (freshExamples && freshExamples.length > 0) {
+                  // Merge any leftovers and cap at 20 total suggestions
+                  const replenishedQueue = [...remainingQueue, ...freshExamples].slice(0, 20);
+                  await supabaseAdmin.from('review_clients').update({
+                    cached_suggestions: replenishedQueue,
+                    suggestions_cached_at: new Date().toISOString()
+                  }).eq('id', clientId);
+                  console.log(`[Submit] ✅ Queue replenished back to ${replenishedQueue.length} for ${client.name}`);
+                }
               }
-              
+            } catch (bgErr) {
+              console.error(`[Submit] Background queue maintenance failed for ${client.name}:`, bgErr.message);
+            }
+          })());
+
+        } else {
+          // Queue is empty or has fewer than 3 items: Serve whatever is left, fill the rest with local fallback suggestions
+          examples = [...cacheQueue];
+          while (examples.length < 3) {
+            const fallbackSet = generateLocalSuggestions(client.name, client.ai_keywords);
+            examples.push(fallbackSet[examples.length % fallbackSet.length]);
+          }
+
+          // Fetch 20 fresh AI suggestions to fully populate the cache in the background
+          ctx.waitUntil((async () => {
+            try {
+              let freshExamples = await generateAISuggestions(env, client, customSuggestions, 20);
+              if (!freshExamples || freshExamples.length === 0) {
+                // Generate 20 local fallback suggestions if AI fails
+                freshExamples = [];
+                for (let i = 0; i < 7; i++) {
+                  freshExamples.push(...generateLocalSuggestions(client.name, client.ai_keywords));
+                }
+                freshExamples = freshExamples.slice(0, 20);
+              }
+
               await supabaseAdmin.from('review_clients').update({
                 cached_suggestions: freshExamples,
                 suggestions_cached_at: new Date().toISOString(),
                 suggestions_used_at: new Date().toISOString()
               }).eq('id', clientId);
-              console.log(`[Submit] Background cache refresh done for ${client.name}`);
+              console.log(`[Submit] ✅ Fully populated fresh queue of ${freshExamples.length} suggestions for ${client.name}`);
             } catch (bgErr) {
-              console.error(`[Submit] Background cache refresh failed for ${client.name}:`, bgErr.message);
+              console.error(`[Submit] Background cache initialization failed for ${client.name}:`, bgErr.message);
             }
           })());
-
-        } else {
-          // No cache (first load) — generate synchronously
-          if (env.OPENROUTER_API_KEY) {
-            try {
-              const freshExamples = await generateAISuggestions(env, client, customSuggestions);
-              if (freshExamples && freshExamples.length > 0) {
-                examples = freshExamples;
-
-                // Save to cache
-                await supabaseAdmin.from('review_clients').update({
-                  cached_suggestions: examples,
-                  suggestions_cached_at: new Date().toISOString(),
-                  suggestions_used_at: new Date().toISOString()
-                }).eq('id', clientId);
-              } else {
-                examples = generateLocalSuggestions(client.name, client.ai_keywords);
-              }
-            } catch (aiErr) {
-              console.error("OpenRouter integration error:", aiErr);
-              examples = generateLocalSuggestions(client.name, client.ai_keywords);
-            }
-          } else {
-            examples = generateLocalSuggestions(client.name, client.ai_keywords);
-          }
         }
       }
 
@@ -1288,12 +1304,16 @@ export async function refreshSuggestionCache(env, supabaseAdmin) {
 
         console.log(`[CronCache] Refreshing suggestions for: ${client.name}`);
 
-        // Use shared AI helper (same logic as /submit)
-        let freshExamples = await generateAISuggestions(env, client, client.custom_suggestions || []);
+        // Use shared AI helper to generate 20 suggestions (same logic as /submit queue replenishment)
+        let freshExamples = await generateAISuggestions(env, client, client.custom_suggestions || [], 20);
 
-        // If AI call failed or no key, generate local fallback
+        // If AI call failed or no key, generate 20 local fallback suggestions
         if (!freshExamples || freshExamples.length === 0) {
-          freshExamples = generateLocalSuggestions(client.name, client.ai_keywords);
+          freshExamples = [];
+          for (let i = 0; i < 7; i++) {
+            freshExamples.push(...generateLocalSuggestions(client.name, client.ai_keywords));
+          }
+          freshExamples = freshExamples.slice(0, 20);
         }
 
         // Write fresh suggestions back to DB cache
