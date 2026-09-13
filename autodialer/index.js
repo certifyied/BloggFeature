@@ -1,4 +1,4 @@
-import { signJWT, verifyJWT } from '../auth.js';
+import { signJWT, verifyJWT, signMagicToken, sendMagicLinkEmail } from '../auth.js';
 
 // In-memory cache fallback in case Supabase schema migration is pending
 export const fallbackStore = {
@@ -168,7 +168,7 @@ export async function handleAutodialerRequest(request, env, ctx, path, method, u
         return jsonResponse({ error: 'Access denied. Only administrators can add sales emails into the database.' }, 403, corsHeaders);
       }
 
-      const { email, role: repRole } = await request.json();
+      const { email, role: repRole, sendInvite = true, redirectUrl } = await request.json();
       if (!email) {
         return jsonResponse({ error: 'Email is required.' }, 400, corsHeaders);
       }
@@ -261,7 +261,103 @@ export async function handleAutodialerRequest(request, env, ctx, path, method, u
         await logAction(supabaseAdmin, normalizedEmail, 'autodialer_sales_email_added', { role: targetRole, addedBy: payload.email }, request.headers.get('CF-Connecting-IP') || '');
       }
 
-      return jsonResponse({ success: true, member: memberObj }, 201, corsHeaders);
+      // Automatically trigger invite magic login link email to the new member
+      let inviteResult = { sent: false, error: null, link: null };
+      if (sendInvite !== false) {
+        try {
+          const magicToken = await signMagicToken(env, {
+            email: normalizedEmail,
+            role: targetRole,
+            projectId: null,
+            clientId: null,
+            isClientPortal: false
+          });
+          const targetUrl = redirectUrl || 'https://www.certifyied.com/autodailer';
+          const magicLink = `${targetUrl}?magic_token=${magicToken}`;
+          inviteResult.link = magicLink;
+          const emailSend = await sendMagicLinkEmail(env, normalizedEmail, magicLink, { isAutodialer: true, isInvite: true });
+          inviteResult.sent = emailSend?.success || false;
+          inviteResult.id = emailSend?.id;
+          if (!emailSend?.success && emailSend?.error) {
+            inviteResult.error = emailSend.error;
+          }
+        } catch (invErr) {
+          inviteResult.error = invErr.message;
+          console.error('[Sales Team Invite Error]:', invErr.message);
+        }
+      }
+
+      return jsonResponse({
+        success: true,
+        member: memberObj,
+        inviteSent: inviteResult.sent,
+        inviteError: inviteResult.error,
+        inviteLink: inviteResult.link
+      }, 201, corsHeaders);
+    } catch (err) {
+      return jsonResponse({ error: err.message }, 500, corsHeaders);
+    }
+  }
+
+  // Admin manually sends magic login link to a sales team member
+  if (subpath === '/sales-team/send-invite' && method === 'POST') {
+    try {
+      const isAdmin = payload && (
+        payload.role === 'admin' ||
+        payload.role === 'global' ||
+        (payload.email && payload.email.toLowerCase() === (env.ADMIN_EMAIL || '').toLowerCase())
+      );
+
+      if (!isAdmin) {
+        return jsonResponse({ error: 'Access denied. Only administrators can send sales team login emails.' }, 403, corsHeaders);
+      }
+
+      const { email: targetEmail, redirectUrl } = await request.json();
+      if (!targetEmail) {
+        return jsonResponse({ error: 'Email is required.' }, 400, corsHeaders);
+      }
+      const normalizedEmail = targetEmail.trim().toLowerCase();
+
+      // Find member role
+      let memberRole = 'sales';
+      try {
+        const { data: dbAdmin } = await supabaseAdmin
+          .from('admins')
+          .select('role')
+          .eq('email', normalizedEmail)
+          .maybeSingle();
+        if (dbAdmin?.role) memberRole = dbAdmin.role;
+      } catch (e) {}
+
+      const magicToken = await signMagicToken(env, {
+        email: normalizedEmail,
+        role: memberRole,
+        projectId: null,
+        clientId: null,
+        isClientPortal: false
+      });
+      const targetUrl = redirectUrl || 'https://www.certifyied.com/autodailer';
+      const magicLink = `${targetUrl}?magic_token=${magicToken}`;
+
+      let emailDelivery = { success: false, error: null };
+      try {
+        const sendRes = await sendMagicLinkEmail(env, normalizedEmail, magicLink, { isAutodialer: true, isInvite: true });
+        emailDelivery.success = sendRes?.success || false;
+        emailDelivery.id = sendRes?.id;
+        if (!sendRes?.success && sendRes?.error) {
+          emailDelivery.error = sendRes.error;
+        }
+      } catch (err) {
+        emailDelivery.error = err.message;
+      }
+
+      return jsonResponse({
+        success: true,
+        email: normalizedEmail,
+        emailSent: emailDelivery.success,
+        emailError: emailDelivery.error,
+        magicLink
+      }, 200, corsHeaders);
     } catch (err) {
       return jsonResponse({ error: err.message }, 500, corsHeaders);
     }

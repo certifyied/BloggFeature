@@ -84,34 +84,34 @@ export async function sendOTPEmail(env, email, otp) {
 export async function sendMagicLinkEmail(env, email, magicLink, portalInfo = {}) {
   const apiKey = env.RESEND_API_KEY;
   const isAutodialer = portalInfo.isAutodialer || magicLink.includes('autodailer') || magicLink.includes('autodialer');
+  const isInvite = portalInfo.isInvite || false;
   
   const fromName = isAutodialer ? 'Certifyied Autodialer' : 'Review Manager Portal';
-  const subject = isAutodialer ? 'Log in to your Certifyied Autodialer' : 'Log in to your Review Manager Portal';
+  const subject = isInvite 
+    ? 'You are invited to Certifyied Autodialer — Log in now'
+    : (isAutodialer ? 'Log in to your Certifyied Autodialer' : 'Log in to your Review Manager Portal');
   const portalTitle = isAutodialer ? 'Certifyied Autodialer Portal' : 'Portal Access';
-  const buttonText = isAutodialer ? 'Log In to Autodialer' : 'Log In to Dashboard';
+  const buttonText = isInvite ? 'Accept Invite & Open Autodialer' : (isAutodialer ? 'Log In to Autodialer' : 'Log In to Dashboard');
 
   if (!apiKey) {
     console.warn('⚠️  RESEND_API_KEY not set.');
     console.warn(`🔑 DEV FALLBACK — Magic Link for ${email}: ${magicLink}`);
-    return;
+    return { success: false, error: 'RESEND_API_KEY not configured on server' };
   }
 
-  const res = await fetch('https://api.resend.com/emails', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      from: `${fromName} <no-reply@send.certifyied.com>`,
-      to: [email],
-      subject,
-      html: `<div style="font-family:sans-serif;background:#ffffff;color:#0f172a;padding:40px;border-radius:12px;max-width:500px;margin:auto;border:1px solid #e2e8f0;box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);">
+  const emailPayload = {
+    to: [email],
+    subject,
+    html: `<div style="font-family:sans-serif;background:#ffffff;color:#0f172a;padding:40px;border-radius:12px;max-width:500px;margin:auto;border:1px solid #e2e8f0;box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);">
   <div style="text-align:center;margin-bottom:20px;">
     <img src="https://certifyied.com/certifyied_logo.png" alt="Certifyied Logo" style="height:48px;width:auto;display:block;margin:0 auto;" />
   </div>
   <h2 style="color:#0071e3;font-weight:700;margin-bottom:20px;text-align:center;">${portalTitle}</h2>
-  <p style="color:#475569;font-size:14px;line-height:1.6;text-align:center;">Click the button below to log in to your dialer account instantly. No password required:</p>
+  <p style="color:#475569;font-size:14px;line-height:1.6;text-align:center;">
+    ${isInvite 
+      ? `You have been registered as an authorized member for the Certifyied Autodialer platform. Click below to access your workstation instantly:` 
+      : `Click the button below to log in to your dialer account instantly. No password required:`}
+  </p>
   <div style="text-align:center;margin:30px 0;">
     <a href="${magicLink}" style="display:inline-block;background:#0071e3;color:#ffffff;padding:12px 24px;border-radius:8px;font-weight:600;text-decoration:none;font-size:15px;box-shadow:0 2px 4px rgba(0,113,227,0.2);">${buttonText}</a>
   </div>
@@ -119,17 +119,60 @@ export async function sendMagicLinkEmail(env, email, magicLink, portalInfo = {})
   <hr style="border:0;border-top:1px solid #e2e8f0;margin:20px 0;"/>
   <p style="color:#94a3b8;font-size:11px;text-align:center;">This link is valid for 15 minutes. If you did not request this, you can safely ignore this email.</p>
 </div>`,
-      text: `Click the link below to log in to your Certifyied dashboard:\n\n${magicLink}\n\nValid for 15 minutes.`,
+    text: `Click the link below to access your Certifyied Autodialer dashboard:\n\n${magicLink}\n\nValid for 15 minutes.`,
+  };
+
+  let res = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      from: `${fromName} <no-reply@send.certifyied.com>`,
+      ...emailPayload,
     }),
   });
 
   if (!res.ok) {
     const err = await res.text().catch(() => '');
-    console.warn(`[MAGIC LINK EMAIL] Resend failed (${res.status}): ${err}`);
-    console.warn(`🔑 DEV FALLBACK — Magic Link for ${email}: ${magicLink}`);
-    if (res.status >= 500) return; 
-    throw new Error(`Email delivery failed: ${res.status} ${err}`);
+    console.warn(`[MAGIC LINK EMAIL] Primary Resend failed (${res.status}): ${err}`);
+
+    // If domain verification failed or rejected, retry with onboarding@resend.dev
+    if (res.status === 403 || res.status === 422 || res.status === 400) {
+      console.warn(`[MAGIC LINK EMAIL] Attempting fallback to onboarding@resend.dev...`);
+      try {
+        const fallbackRes = await fetch('https://api.resend.com/emails', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify({
+            from: `${fromName} <onboarding@resend.dev>`,
+            ...emailPayload,
+          }),
+        });
+
+        if (fallbackRes.ok) {
+          const fbJson = await fallbackRes.json().catch(() => ({}));
+          console.log(`[MAGIC LINK EMAIL] Fallback delivered via onboarding@resend.dev:`, fbJson);
+          return { success: true, id: fbJson?.id, provider: 'resend_fallback' };
+        } else {
+          const fbErr = await fallbackRes.text().catch(() => '');
+          console.warn(`[MAGIC LINK EMAIL] Fallback Resend failed (${fallbackRes.status}): ${fbErr}`);
+          throw new Error(`Email delivery failed: ${err} | Fallback: ${fbErr}`);
+        }
+      } catch (fbCatch) {
+        throw new Error(`Email delivery failed: ${err} | Fallback catch: ${fbCatch.message}`);
+      }
+    }
+
+    throw new Error(`Email delivery failed (${res.status}): ${err}`);
   }
+
+  const json = await res.json().catch(() => ({}));
+  return { success: true, id: json?.id, provider: 'resend' };
 }
 
 // Router handler for auth endpoints
@@ -299,16 +342,25 @@ export async function handleAuthRequest(request, env, ctx, path, method, supabas
       const magicLink = `${redirectUrl}?magic_token=${magicToken}`;
       await logAction(supabaseAdmin, email, 'magic_link_requested', { email, redirectUrl }, request.headers.get('CF-Connecting-IP') || '');
 
+      let emailDelivery = { success: false, error: null };
       try {
-        await sendMagicLinkEmail(env, email, magicLink, { isAutodialer: isAutodialerPortal });
+        const sendRes = await sendMagicLinkEmail(env, email, magicLink, { isAutodialer: isAutodialerPortal });
+        emailDelivery.success = true;
+        emailDelivery.id = sendRes?.id;
+        emailDelivery.provider = sendRes?.provider;
       } catch (emailErr) {
         console.error('[MagicLink] Email delivery failed:', emailErr.message);
+        emailDelivery.error = emailErr.message;
       }
 
       return new Response(JSON.stringify({ 
         success: true, 
-        message: "Magic link sent successfully. Please check your email inbox.",
-        devMagicLink: (isAutodialerPortal || !env.RESEND_API_KEY) ? magicLink : undefined
+        message: emailDelivery.success
+          ? "Magic link sent successfully. Please check your email inbox."
+          : `Magic link generated, but email delivery issue: ${emailDelivery.error}`,
+        emailSent: emailDelivery.success,
+        emailDelivery,
+        devMagicLink: (isAutodialerPortal || !env.RESEND_API_KEY || !emailDelivery.success) ? magicLink : undefined
       }), {
         status: 200,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
