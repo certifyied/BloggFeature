@@ -5,6 +5,7 @@ import { handleReviewRequest, refreshSuggestionCache } from './reviews.js';
 import { handleAiRequest } from './ai.js';
 import { handleGoogleOauthRequest } from './google_oauth.js';
 import { handleAutoReplyRequest, scheduledSyncAllClients } from './autoreply.js';
+import { handleAutodialerRequest } from './autodialer/index.js';
 
 // System Audit Logs Helper
 async function logAction(supabaseAdmin, email, action, details = {}, ip = '') {
@@ -71,6 +72,15 @@ export default {
 
     const url = new URL(request.url);
     let path = url.pathname;
+    
+    // Redirect static reviewdash frontend requests received by the API worker to the actual frontend host
+    // if (path.startsWith('/reviewdash')) {
+    //   const targetHost = url.hostname === 'localhost' || url.hostname === '127.0.0.1'
+    //     ? 'http://localhost:8080'
+    //     : 'https://www.certifyied.com';
+    //   return Response.redirect(`${targetHost}${path}${url.search}`, 302);
+    // }
+
     if (path.length > 1 && path.endsWith('/')) {
       path = path.slice(0, -1);
     }
@@ -107,7 +117,7 @@ export default {
 
     // 2. Dispatch Review requests
     if (path.startsWith('/adminApiBlog/api/reviews')) {
-      const autoReplyRes = await handleAutoReplyRequest(request, env, ctx, path, method, supabaseAdmin, corsHeaders, url);
+      const autoReplyRes = await handleAutoReplyRequest(request, env, ctx, path, method, supabaseAdmin, corsHeaders, url, payload);
       if (autoReplyRes) return autoReplyRes;
 
       const reviewRes = await handleReviewRequest(request, env, ctx, path, method, url, payload, supabaseAdmin, corsHeaders, logAction);
@@ -118,6 +128,12 @@ export default {
     if (path.startsWith('/adminApiBlog/api/ai')) {
       const aiRes = await handleAiRequest(request, env, ctx, path, method, payload, corsHeaders);
       if (aiRes) return aiRes;
+    }
+
+    // 2c. Dispatch Autodialer requests
+    if (path.startsWith('/adminApiBlog/api/autodialer') || path.startsWith('/autodialer/api')) {
+      const autodialerRes = await handleAutodialerRequest(request, env, ctx, path, method, url, payload, supabaseAdmin, corsHeaders, logAction);
+      if (autodialerRes) return autodialerRes;
     }
 
     // 3. Dispatch Blog requests

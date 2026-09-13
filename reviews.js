@@ -113,8 +113,8 @@ async function generateAISuggestions(env, supabaseAdmin, client, customSuggestio
   }
   const dummyJSON = `{\n  "reviews": [\n    ${dummyExamples.join(',\n    ')}\n  ]\n}`;
 
-  // Concise prompt to ensure extremely fast model responses and short reviews.
-  const systemPrompt = `You are a professional local SEO copywriter and customer experience assistant helping a client write a genuine, enthusiastic Google review for a business named "${client.name}".
+  // Prompt to ensure human-like friendly paragraphs with no punctuation
+  const systemPrompt = `You are a warm, casual customer writing a friendly, enthusiastic Google review for a business named "${client.name}".
 The business has specified these keywords which MUST be woven naturally and contextually into the review variations:
 ${keywordsList.length > 0 ? keywordsList.map(kw => `- ${kw}`).join('\n') : '- excellent service'}
 
@@ -122,10 +122,11 @@ ${guidanceTemplate}
 
 Generate exactly ${count} distinct, positive (5-star) review variations.
 Guidelines:
-1. Keep the reviews short and sweet. Each review variation must consist of exactly 1 to 2 short sentences (maximum 20 to 35 words or 150 characters per variation).
-2. The reviews must feel 100% written by different real human customers. Vary their writing style, tone, and specific points of focus.
-3. Incorporate the name "${client.name}" and the specified keywords naturally.
-4. Respond ONLY with a valid, clean JSON object containing an array of strings under the key "reviews". Example output format for ${count} variations:
+1. Make each review variation a single detailed, big paragraph (friendly and highly human-like).
+2. Crucial rule: Do not use ANY punctuation marks at all in the review text (absolutely no periods, commas, exclamation marks, question marks, apostrophes, hyphens, or quotes).
+3. The reviews must feel 100% written by different real human customers typing a warm casual review.
+4. Incorporate the name "${client.name}" and the specified keywords naturally.
+5. Respond ONLY with a valid, clean JSON object containing an array of strings under the key "reviews". Example output format for ${count} variations:
 ${dummyJSON}`;
 
   let models = [];
@@ -167,12 +168,12 @@ ${dummyJSON}`;
           { role: 'system', content: systemPrompt },
           { role: 'user', content: `Generate positive reviews utilizing keywords: ${client.ai_keywords || ''} (Request ID: ${randomSeed})` }
         ],
-        temperature: 0.85,
-        response_format: { type: 'json_object' }
+        temperature: 0.85
       };
 
-      // Add seed for OpenRouter models
+      // Add seed and response_format for OpenRouter models
       if (provider === 'openrouter') {
+        requestBody.response_format = { type: 'json_object' };
         requestBody.seed = randomSeed;
       }
 
@@ -227,7 +228,13 @@ ${dummyJSON}`;
     const parsed = JSON.parse(cleanText);
     const result = parsed.reviews || parsed.examples || (Array.isArray(parsed) ? parsed : null);
     if (Array.isArray(result) && result.length > 0) {
-      return result;
+      // Strip all punctuation marks from each suggestion programmatically
+      return result.map(s => 
+        (typeof s === 'string' ? s : '')
+          .replace(/[.,\/#!$%\^&\*;:{}=\-_`~()?"']/g, "")
+          .replace(/\s+/g, " ")
+          .trim()
+      ).filter(Boolean);
     }
   } catch (parseErr) {
     console.error(`[generateAISuggestions] JSON parsing failed for response: ${responseText.substring(0, 150)}... Error: ${parseErr.message}`);

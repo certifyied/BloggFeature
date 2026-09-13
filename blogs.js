@@ -979,6 +979,7 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
 
     // GET & POST Projects
     if (path === '/adminApiBlog/api/projects') {
+      if (!payload) return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: corsHeaders });
       if (request.method === 'GET') {
         let query = supabaseAdmin.from('projects').select('*');
         if (payload.projectId) {
@@ -1046,6 +1047,7 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
 
     // GET & POST Blog Clients
     if (path === '/adminApiBlog/api/blog-clients') {
+      if (!payload) return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: corsHeaders });
       if (request.method === 'GET') {
         let query = supabaseAdmin.from('blog_clients').select('*, projects(name)');
         if (payload.projectId) {
@@ -1885,7 +1887,10 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
           <p style="margin-top: 5px; margin-bottom: 10px; font-size: 13px;">Authorizes a new client user to log in and manage stories for a specific parent project location.</p>
           <div class="flex-group" style="margin-top: 15px; display: flex; flex-direction: column; gap: 10px;">
             <label style="font-size:12px; font-weight:600;">Select Project *</label>
-            <select id="new-client-project-id" style="padding:10px; border-radius:8px; border:1px solid var(--border); background: #fff;"></select>
+            <div style="display: flex; gap: 8px;">
+              <select id="new-client-project-id" style="padding:10px; border-radius:8px; border:1px solid var(--border); background: #fff; flex: 1; height: 42px;"></select>
+              <button class="btn btn-secondary" onclick="openCreateProjectModal()" style="height: 42px; padding: 0 12px; font-size: 13px; display: flex; align-items: center; white-space: nowrap;">+ Create Project</button>
+            </div>
             
             <label style="font-size:12px; font-weight:600; margin-top:5px;">Blogger Name</label>
             <input type="text" id="new-client-name" placeholder="e.g. John Doe, Lead Editor">
@@ -2151,6 +2156,36 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
         </div>
       </div>
 
+    </div>
+  </div>
+
+  <!-- CREATE PROJECT MODAL -->
+  <div id="create-project-modal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(15, 23, 42, 0.6); align-items: center; justify-content: center; z-index: 9999; backdrop-filter: blur(4px);">
+    <div style="background: var(--card-bg); border-radius: 16px; width: 100%; max-width: 480px; padding: 30px; box-shadow: 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1); position: relative; border: 1px solid var(--border);">
+      <button onclick="closeCreateProjectModal()" style="position: absolute; top: 20px; right: 20px; border: none; background: none; font-size: 20px; color: var(--muted); cursor: pointer;">✕</button>
+      <h3 style="margin-bottom: 20px; font-size: 18px; font-weight: 600; color: var(--text);">Provision New Client Project</h3>
+      
+      <div style="display: flex; flex-direction: column; gap: 15px;">
+        <div>
+          <label style="font-size: 12px; font-weight: 600; display: block; margin-bottom: 5px; color: var(--text);">Project Name *</label>
+          <input type="text" id="modal-project-name" placeholder="e.g. Acme Corporation" style="width: 100%; padding: 12px; border-radius: 8px; border: 1px solid var(--border); outline: none;">
+        </div>
+        
+        <div>
+          <label style="font-size: 12px; font-weight: 600; display: block; margin-bottom: 5px; color: var(--text);">Website URL</label>
+          <input type="text" id="modal-project-url" placeholder="e.g. https://acme.com" style="width: 100%; padding: 12px; border-radius: 8px; border: 1px solid var(--border); outline: none;">
+        </div>
+        
+        <div>
+          <label style="font-size: 12px; font-weight: 600; display: block; margin-bottom: 5px; color: var(--text);">Contact Email</label>
+          <input type="email" id="modal-project-email" placeholder="e.g. contact@acme.com" style="width: 100%; padding: 12px; border-radius: 8px; border: 1px solid var(--border); outline: none;">
+        </div>
+        
+        <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 15px;">
+          <button class="btn btn-secondary" onclick="closeCreateProjectModal()" style="background: #e2e8f0; color: #475569; padding: 10px 20px; border-radius: 8px; border: none; font-weight: 500; cursor: pointer;">Cancel</button>
+          <button class="btn" onclick="submitCreateProjectModal()" style="padding: 10px 20px; border-radius: 8px; border: none; font-weight: 500; cursor: pointer;">Create Project</button>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -2544,6 +2579,52 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
         }
       } catch (e) {
         showToast("Error adding blog client");
+      }
+    }
+
+    function openCreateProjectModal() {
+      document.getElementById('create-project-modal').style.setProperty('display', 'flex', 'important');
+      document.getElementById('modal-project-name').value = '';
+      document.getElementById('modal-project-url').value = '';
+      document.getElementById('modal-project-email').value = '';
+    }
+
+    function closeCreateProjectModal() {
+      document.getElementById('create-project-modal').style.setProperty('display', 'none', 'important');
+    }
+
+    async function submitCreateProjectModal() {
+      const name = document.getElementById('modal-project-name').value.trim();
+      const urlVal = document.getElementById('modal-project-url').value.trim();
+      const email = document.getElementById('modal-project-email').value.trim();
+
+      if (!name) {
+        showToast("Project Name is required!");
+        return;
+      }
+
+      try {
+        const res = await fetch(baseUrl + "/api/projects", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": "Bearer " + token
+          },
+          body: JSON.stringify({ name, url: urlVal, contact_email: email })
+        });
+
+        const data = await res.json();
+        if (res.ok) {
+          showToast("Project created successfully!");
+          closeCreateProjectModal();
+          
+          await loadProjects();
+          document.getElementById('new-client-project-id').value = data.id;
+        } else {
+          showToast(data.error || "Failed to create project");
+        }
+      } catch (e) {
+        showToast("Error creating project: " + e.message);
       }
     }
 

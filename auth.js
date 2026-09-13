@@ -81,8 +81,14 @@ export async function sendOTPEmail(env, email, otp) {
 }
 
 // Magic Link Email Delivery
-export async function sendMagicLinkEmail(env, email, magicLink) {
+export async function sendMagicLinkEmail(env, email, magicLink, portalInfo = {}) {
   const apiKey = env.RESEND_API_KEY;
+  const isAutodialer = portalInfo.isAutodialer || magicLink.includes('autodailer') || magicLink.includes('autodialer');
+  
+  const fromName = isAutodialer ? 'Certifyied Autodialer' : 'Review Manager Portal';
+  const subject = isAutodialer ? 'Log in to your Certifyied Autodialer' : 'Log in to your Review Manager Portal';
+  const portalTitle = isAutodialer ? 'Certifyied Autodialer Portal' : 'Portal Access';
+  const buttonText = isAutodialer ? 'Log In to Autodialer' : 'Log In to Dashboard';
 
   if (!apiKey) {
     console.warn('⚠️  RESEND_API_KEY not set.');
@@ -97,23 +103,23 @@ export async function sendMagicLinkEmail(env, email, magicLink) {
       'Authorization': `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
-      from: 'Review Manager Portal <no-reply@send.certifyied.com>',
+      from: `${fromName} <no-reply@send.certifyied.com>`,
       to: [email],
-      subject: 'Log in to your Review Manager Portal',
+      subject,
       html: `<div style="font-family:sans-serif;background:#ffffff;color:#0f172a;padding:40px;border-radius:12px;max-width:500px;margin:auto;border:1px solid #e2e8f0;box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);">
   <div style="text-align:center;margin-bottom:20px;">
-    <img src="https://www.reviewmanager.in/image.png" alt="Review Manager Logo" style="height:48px;width:auto;display:block;margin:0 auto;" />
+    <img src="https://certifyied.com/certifyied_logo.png" alt="Certifyied Logo" style="height:48px;width:auto;display:block;margin:0 auto;" />
   </div>
-  <h2 style="color:#6366f1;font-weight:700;margin-bottom:20px;text-align:center;">Portal Access</h2>
-  <p style="color:#475569;font-size:14px;line-height:1.6;text-align:center;">Click the button below to log in to your dashboard instantly. No password or verification code required:</p>
+  <h2 style="color:#0071e3;font-weight:700;margin-bottom:20px;text-align:center;">${portalTitle}</h2>
+  <p style="color:#475569;font-size:14px;line-height:1.6;text-align:center;">Click the button below to log in to your dialer account instantly. No password required:</p>
   <div style="text-align:center;margin:30px 0;">
-    <a href="${magicLink}" style="display:inline-block;background:#4f46e5;color:#ffffff;padding:12px 24px;border-radius:8px;font-weight:600;text-decoration:none;font-size:15px;box-shadow:0 2px 4px rgba(79,70,229,0.2);">Log In to Dashboard</a>
+    <a href="${magicLink}" style="display:inline-block;background:#0071e3;color:#ffffff;padding:12px 24px;border-radius:8px;font-weight:600;text-decoration:none;font-size:15px;box-shadow:0 2px 4px rgba(0,113,227,0.2);">${buttonText}</a>
   </div>
-  <p style="color:#94a3b8;font-size:12px;line-height:1.4;word-break:break-all;">Or copy and paste this link in your browser:<br/><a href="${magicLink}" style="color:#6366f1;">${magicLink}</a></p>
+  <p style="color:#94a3b8;font-size:12px;line-height:1.4;word-break:break-all;">Or copy and paste this link in your browser:<br/><a href="${magicLink}" style="color:#0071e3;">${magicLink}</a></p>
   <hr style="border:0;border-top:1px solid #e2e8f0;margin:20px 0;"/>
   <p style="color:#94a3b8;font-size:11px;text-align:center;">This link is valid for 15 minutes. If you did not request this, you can safely ignore this email.</p>
 </div>`,
-      text: `Click the link below to log in to your Review Manager dashboard:\n\n${magicLink}\n\nValid for 15 minutes.`,
+      text: `Click the link below to log in to your Certifyied dashboard:\n\n${magicLink}\n\nValid for 15 minutes.`,
     }),
   });
 
@@ -141,13 +147,47 @@ export async function handleAuthRequest(request, env, ctx, path, method, supabas
 
       const isClientReviewsPortal = portalType === 'client_reviews' || redirectUrl.includes('clientReview');
       const isReviewsAdminPortal = portalType === 'admin_reviews' || redirectUrl.includes('reviewdash') || redirectUrl.includes('reviews.');
+      const isAutodialerPortal = portalType === 'sales' || portalType === 'autodialer' || redirectUrl.includes('autodailer') || redirectUrl.includes('autodialer');
       
       let isAuthorized = false;
       let role = 'client';
       let projectId = null;
       let clientId = null;
 
-      if (isClientReviewsPortal || isReviewsAdminPortal) {
+      if (isAutodialerPortal) {
+        // --- AUTODIALER / SALES PORTAL LOGIN ---
+        try {
+          const { data: adminUser } = await supabaseAdmin
+            .from('admins')
+            .select('role, project_id')
+            .eq('email', email.toLowerCase())
+            .maybeSingle();
+
+          if (adminUser && (adminUser.role === 'sales' || adminUser.role === 'admin' || adminUser.role === 'global')) {
+            isAuthorized = true;
+            role = adminUser.role;
+            projectId = adminUser.project_id;
+          }
+        } catch (e) {
+          console.error("Admins lookup failed for autodialer:", e.message);
+        }
+
+        if (!isAuthorized) {
+          try {
+            const { fallbackStore } = await import('./autodialer/index.js');
+            const fallbackMember = fallbackStore?.salesTeam?.find(m => m.email.toLowerCase() === email.toLowerCase());
+            if (fallbackMember) {
+              isAuthorized = true;
+              role = fallbackMember.role;
+            }
+          } catch (e) {}
+        }
+
+        if (!isAuthorized && (email.toLowerCase() === (env.ADMIN_EMAIL || '').toLowerCase() || email.toLowerCase().includes('certifyied.com'))) {
+          isAuthorized = true;
+          role = email.toLowerCase() === (env.ADMIN_EMAIL || '').toLowerCase() ? 'admin' : 'sales';
+        }
+      } else if (isClientReviewsPortal || isReviewsAdminPortal) {
         // --- 1 & 2. REVIEWS PORTAL LOGINS (CLIENT OR ADMIN) ---
         // A. Check if the user is an admin in admins first
         try {
@@ -260,12 +300,16 @@ export async function handleAuthRequest(request, env, ctx, path, method, supabas
       await logAction(supabaseAdmin, email, 'magic_link_requested', { email, redirectUrl }, request.headers.get('CF-Connecting-IP') || '');
 
       try {
-        await sendMagicLinkEmail(env, email, magicLink);
+        await sendMagicLinkEmail(env, email, magicLink, { isAutodialer: isAutodialerPortal });
       } catch (emailErr) {
         console.error('[MagicLink] Email delivery failed:', emailErr.message);
       }
 
-      return new Response(JSON.stringify({ success: true, message: "Magic link sent successfully." }), {
+      return new Response(JSON.stringify({ 
+        success: true, 
+        message: "Magic link sent successfully. Please check your email inbox.",
+        devMagicLink: !env.RESEND_API_KEY ? magicLink : undefined
+      }), {
         status: 200,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });

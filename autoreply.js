@@ -7,15 +7,20 @@ import { refreshAccessToken } from './google_oauth.js';
 
 // Auto draft reviews using OpenRouter NVIDIA Nemotron
 async function draftReviewReply(env, businessName, reviewerName, rating, reviewText, keywordsStr) {
-  const keywordSection = keywordsStr ? ` If writing a positive reply, try to naturally highlight or align with these key qualities: "${keywordsStr}".` : "";
-
-  const prompt = `You are a professional customer relations assistant writing replies to Google reviews for the business "${businessName}". 
+  const prompt = `You are a warm, friendly customer relations manager replying to a review for the business "${businessName}".
 Reviewer: ${reviewerName}
 Rating: ${rating} Stars
 Review comment: "${reviewText || 'No comments left.'}"
-${keywordSection}
+Keywords to select from: "${keywordsStr || ''}"
 
-Generate a short, friendly, professional reply to this customer (1 to 3 sentences). If the review is positive (4 or 5 stars), express appreciation. If the review is critical (3 stars or below), express empathy, offer apology, and invite them to reach out directly to resolve the matter. Keep the reply clean. Respond with ONLY the reply text, no introductory lines, notes, or quotes.`;
+Write a creative, warm, and casual reply.
+Crucial rules:
+1. Keep the reply very short and sweet (exactly 1 to 2 short sentences).
+2. Weave in a maximum of 1 or 2 keywords from the list above. Do not force them, and do not include more than 2 keywords.
+3. Do not repeat what the reviewer said in their comment. Be creative and write from the perspective of being extremely grateful to the customer because their support and feedback helps your business grow and succeed.
+4. Make it sound highly conversational, natural, and friendly (like a real human typing a friendly casual message).
+5. Use normal, basic punctuation marks (such as periods and commas) to make it readable and professional.
+6. Respond with ONLY the reply text. Do not include any introductory lines, signatures, or metadata.`;
 
   try {
     const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
@@ -35,13 +40,14 @@ Generate a short, friendly, professional reply to this customer (1 to 3 sentence
     if (!res.ok) {
       const errTxt = await res.text();
       console.error(`OpenRouter Error Response: Status ${res.status} - ${errTxt}`);
-      return `Thank you for your feedback! We appreciate you taking the time to share your experience. (API Error: ${res.status})`;
+      return `Thank you for your feedback! We appreciate you taking the time to share your experience.`;
     }
     const data = await res.json();
-    return data.choices?.[0]?.message?.content?.trim() || "Thank you for your review!";
+    const rawReply = data.choices?.[0]?.message?.content || "Thank you so much for the feedback.";
+    return rawReply.trim();
   } catch (err) {
     console.error(`draftReviewReply failed: ${err.message}`);
-    return `Thank you for your feedback! We appreciate you sharing your experience with us. (Exception: ${err.message})`;
+    return `Thank you for your feedback! We appreciate you sharing your experience with us.`;
   }
 }
 
@@ -75,9 +81,8 @@ async function getOrRefreshClientToken(client, env, supabaseAdmin) {
 }
 
 // Publish reply back to Google Business API
-async function postReplyToGoogle(accessToken, locationId, reviewId, replyText) {
-  // Endpoints: v1/accounts/{accountId}/locations/{locationId}/reviews/{reviewId}/reply
-  const url = `https://mybusinessreviews.googleapis.com/v1/${locationId}/reviews/${reviewId}/reply`;
+async function postReplyToGoogle(accessToken, reviewName, replyText) {
+  const url = `https://mybusiness.googleapis.com/v4/${reviewName}/reply`;
   const res = await fetch(url, {
     method: 'PUT',
     headers: {
@@ -87,6 +92,8 @@ async function postReplyToGoogle(accessToken, locationId, reviewId, replyText) {
     body: JSON.stringify({ comment: replyText })
   });
 
+  console.log(res, 'here from the res of the shit from api ')
+
   if (!res.ok) {
     const errText = await res.text();
     throw new Error(`Google Review Reply API Error: ${errText}`);
@@ -94,23 +101,64 @@ async function postReplyToGoogle(accessToken, locationId, reviewId, replyText) {
   return await res.json();
 }
 
-// Fetch latest reviews from Google My Business
-async function fetchGoogleReviews(accessToken, locationId) {
-  const url = `https://mybusinessreviews.googleapis.com/v1/${locationId}/reviews`;
-  const res = await fetch(url, {
-    headers: { 'Authorization': `Bearer ${accessToken}` }
-  });
-  if (!res.ok) return [];
-  const data = await res.json();
-  return data.reviews || [];
+// Fetch latest reviews from Google My Business (supports comma-separated multiple locations)
+async function fetchGoogleReviews(accessToken, accountId, locationId) {
+  if (!locationId) return [];
+  const locIds = locationId.split(',');
+  const allReviews = [];
+
+  for (const locId of locIds) {
+    const trimmedLoc = locId.trim();
+    const path = accountId ? `${accountId}/${trimmedLoc}` : trimmedLoc;
+    const url = `https://mybusiness.googleapis.com/v4/${path}/reviews`;
+    
+    console.log(`[Google Reviews API] Fetching reviews from URL: ${url}`);
+    const res = await fetch(url, {
+      headers: { 'Authorization': `Bearer ${accessToken}` }
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      console.error(`fetchGoogleReviews failed for ${trimmedLoc}: ${res.status} - ${errText}`);
+      continue;
+    }
+
+    const data = await res.json();
+    if (data.reviews) {
+      allReviews.push(...data.reviews);
+    }
+  }
+
+  console.log(`\n--- FETCHED REVIEWS SUMMARY ---`);
+  console.log(`Total Reviews Fetched: ${allReviews.length}`);
+  console.log(JSON.stringify(allReviews.map(r => ({
+    reviewer: r.reviewer?.displayName,
+    comment: r.comment,
+    createTime: r.createTime
+  })), null, 2));
+  console.log(`--------------------------------\n`);
+
+  return allReviews;
 }
 
-export async function handleAutoReplyRequest(request, env, ctx, path, method, supabaseAdmin, corsHeaders, url) {
+export async function handleAutoReplyRequest(request, env, ctx, path, method, supabaseAdmin, corsHeaders, url, payload) {
   // Test Review Simulator Endpoint
   if (path === '/adminApiBlog/api/reviews/simulate-reply' && method === 'POST') {
     try {
       const { clientId, reviewerName, rating, comment } = await request.json();
-      if (!clientId) {
+      let targetClientId = clientId;
+      if (!targetClientId && payload && payload.projectId) {
+        const { data: projectClients } = await supabaseAdmin
+          .from('review_clients')
+          .select('id')
+          .eq('project_id', payload.projectId)
+          .limit(1);
+        if (projectClients && projectClients.length > 0) {
+          targetClientId = projectClients[0].id;
+        }
+      }
+
+      if (!targetClientId) {
         return new Response(JSON.stringify({ error: "clientId is required" }), {
           status: 400,
           headers: { ...corsHeaders, 'Content-Type': 'application/json' }
@@ -120,7 +168,7 @@ export async function handleAutoReplyRequest(request, env, ctx, path, method, su
       const { data: client, error } = await supabaseAdmin
         .from('review_clients')
         .select('*')
-        .eq('id', clientId)
+        .eq('id', targetClientId)
         .maybeSingle();
 
       if (error || !client) {
@@ -154,8 +202,30 @@ export async function handleAutoReplyRequest(request, env, ctx, path, method, su
 
   // Webhook or Trigger Endpoint to initiate automation
   if (path === '/adminApiBlog/api/reviews/sync-and-reply' && method === 'POST') {
-    const { clientId } = await request.json();
-    if (!clientId) {
+    let clientId = null;
+    try {
+      const body = await request.json();
+      clientId = body?.clientId || null;
+    } catch (e) {
+      console.warn("Failed to parse request JSON body:", e.message);
+    }
+
+    let targetClientId = clientId;
+
+    // Fallback: If clientId is missing but we have an authorized projectId from the JWT token
+    if (!targetClientId && payload && payload.projectId) {
+      const { data: projectClients } = await supabaseAdmin
+        .from('review_clients')
+        .select('id')
+        .eq('project_id', payload.projectId)
+        .limit(1);
+
+      if (projectClients && projectClients.length > 0) {
+        targetClientId = projectClients[0].id;
+      }
+    }
+
+    if (!targetClientId) {
       return new Response(JSON.stringify({ error: "clientId is required" }), {
         status: 400,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
@@ -167,9 +237,9 @@ export async function handleAutoReplyRequest(request, env, ctx, path, method, su
       const { data: client, error } = await supabaseAdmin
         .from('review_clients')
         .select('*')
-        .eq('id', clientId)
+        .eq('id', targetClientId)
         .maybeSingle();
-
+      console.log(client, error)
       if (error || !client || !client.google_location_id) {
         return new Response(JSON.stringify({ error: "Client not configured for Google OAuth" }), {
           status: 400,
@@ -181,15 +251,25 @@ export async function handleAutoReplyRequest(request, env, ctx, path, method, su
       const accessToken = await getOrRefreshClientToken(client, env, supabaseAdmin);
 
       // 3. Fetch reviews from Google My Business Profile
-      const reviews = await fetchGoogleReviews(accessToken, client.google_location_id);
+      const reviews = await fetchGoogleReviews(accessToken, client.google_account_id, client.google_location_id);
       const actionLog = [];
 
       // 4. Process each review
       for (const review of reviews) {
         const reviewId = review.reviewId;
-        
+
         // Skip if review already has an owner response
-        if (review.reviewReply) continue;
+        if (review.reviewReply) {
+          continue;
+        }
+
+        // Filter: Only reply to reviews created within the last 4 days
+        const reviewDate = new Date(review.createTime || review.updateTime);
+        const cutoffDate = new Date();
+        cutoffDate.setDate(cutoffDate.getDate() - 4); // 4 days ago
+        if (reviewDate < cutoffDate) {
+          continue;
+        }
 
         const ratingVal = review.starRating; // e.g. "FIVE", "FOUR"
         let stars = 5;
@@ -201,14 +281,22 @@ export async function handleAutoReplyRequest(request, env, ctx, path, method, su
         const reviewerName = review.reviewer?.displayName || 'Valued Customer';
         const reviewComment = review.comment || '';
 
-        // Generate response using Nemotron
-        const replyText = await draftReviewReply(env, client.name, reviewerName, stars, reviewComment, client.ai_keywords);
+        console.log(`\n========================================`);
+        console.log(`ELIGIBLE REVIEW FOR REPLY:`);
+        console.log(`Reviewer: ${reviewerName}`);
+        console.log(`Rating: ${stars} Stars`);
+        console.log(`Comment: "${reviewComment}"`);
+        console.log(`========================================\n`);
+
+        // Generate response using Nemotron (or use white heart emoji if no comment)
+        const replyText = !reviewComment.trim() ? "🤍" : await draftReviewReply(env, client.name, reviewerName, stars, reviewComment, client.ai_keywords);
 
         // Submit reply to Google Review Profile
-        await postReplyToGoogle(accessToken, client.google_location_id, reviewId, replyText);
+        await postReplyToGoogle(accessToken, review.name, replyText);
+        console.log(`Successfully replied to review ${reviewId} (${reviewerName}) with: "${replyText}"`);
 
         // Log results
-        actionLog.push({ reviewId, reviewerName, stars, replyText });
+        actionLog.push({ reviewId, reviewerName, stars, replyText, status: 'replied_live' });
       }
 
       return new Response(JSON.stringify({ success: true, processedReviews: actionLog }), {
@@ -249,7 +337,7 @@ export async function handleAutoReplyRequest(request, env, ctx, path, method, su
       }
 
       const accessToken = await getOrRefreshClientToken(client, env, supabaseAdmin);
-      
+
       // Call Google My Business API to configure Pub/Sub notificationSettings
       const setupUrl = `https://mybusinessaccountmanagement.googleapis.com/v1/${client.google_account_id}/notificationSetting`;
       const googleRes = await fetch(setupUrl, {
@@ -288,7 +376,7 @@ export async function handleAutoReplyRequest(request, env, ctx, path, method, su
   if (path === '/adminApiBlog/api/reviews/google-webhook' && method === 'POST') {
     try {
       const payloadBody = await request.json();
-      
+
       // Decrypt Google Cloud Pub/Sub base64 envelope data
       // Google sends notifications in envelope format: { message: { data: "base64String", messageId: "xxx" } }
       if (!payloadBody.message || !payloadBody.message.data) {
@@ -297,7 +385,7 @@ export async function handleAutoReplyRequest(request, env, ctx, path, method, su
 
       const decodedString = atob(payloadBody.message.data);
       const googleNotification = JSON.parse(decodedString);
-      
+
       // Google Notification payload format:
       // {
       //   "name": "accounts/{accountId}/locations/{locationId}/reviews/{reviewId}",
@@ -308,9 +396,9 @@ export async function handleAutoReplyRequest(request, env, ctx, path, method, su
 
       // We only auto-reply to new review events
       if (eventType !== 'NEW_REVIEW' || !resourceName) {
-        return new Response(JSON.stringify({ success: true, message: "Ignored event type" }), { 
-          status: 200, 
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+        return new Response(JSON.stringify({ success: true, message: "Ignored event type" }), {
+          status: 200,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
         });
       }
 
@@ -404,10 +492,21 @@ export async function scheduledSyncAllClients(env, supabaseAdmin) {
     for (const client of clients) {
       try {
         const accessToken = await getOrRefreshClientToken(client, env, supabaseAdmin);
-        const reviews = await fetchGoogleReviews(accessToken, client.google_location_id);
+        const reviews = await fetchGoogleReviews(accessToken, client.google_account_id, client.google_location_id);
 
         for (const review of reviews) {
-          if (review.reviewReply) continue; // Already replied
+          if (review.reviewReply) {
+            console.log(`Cron: Skipping review ${review.reviewId} (already has reply)`);
+            continue; // Already replied
+          }
+
+          // Filter: Only reply to reviews created within the last 4 days
+          const reviewDate = new Date(review.createTime || review.updateTime);
+          const cutoffDate = new Date();
+          cutoffDate.setDate(cutoffDate.getDate() - 4); // 4 days ago
+          if (reviewDate < cutoffDate) {
+            continue;
+          }
 
           const ratingVal = review.starRating;
           let stars = 5;
@@ -419,8 +518,9 @@ export async function scheduledSyncAllClients(env, supabaseAdmin) {
           const reviewerName = review.reviewer?.displayName || 'Valued Customer';
           const reviewComment = review.comment || '';
 
-          const replyText = await draftReviewReply(env, client.name, reviewerName, stars, reviewComment, client.ai_keywords);
-          await postReplyToGoogle(accessToken, client.google_location_id, review.reviewId, replyText);
+          // Generate response using Nemotron (or use white heart emoji if no comment)
+          const replyText = !reviewComment.trim() ? "🤍" : await draftReviewReply(env, client.name, reviewerName, stars, reviewComment, client.ai_keywords);
+          await postReplyToGoogle(accessToken, review.name, replyText);
           console.log(`Successfully auto-replied to review ${review.reviewId} for client: ${client.name}`);
         }
       } catch (clientErr) {
