@@ -5,4 +5,4 @@ node_modules/
 .wrangler/
 dist/
 *.sql
-scratch/
+scratch/certifyied-landing-page.code-workspace
