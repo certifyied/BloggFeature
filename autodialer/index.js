@@ -59,23 +59,29 @@ export async function handleAutodialerRequest(request, env, ctx, path, method, u
           userRole = normalizedEmail === (env.ADMIN_EMAIL || '').toLowerCase() ? 'admin' : 'sales';
           // Auto-insert into admins for subsequent lookups
           try {
-            await supabaseAdmin.from('admins').insert({
-              id: crypto.randomUUID(),
+            let userId = null;
+            const { data: authUser } = await supabaseAdmin.auth.admin.createUser({
               email: normalizedEmail,
-              role: userRole
+              email_confirm: true,
+              password: crypto.randomUUID()
             });
+            userId = authUser?.user?.id;
+            if (!userId) {
+              const { data: existingUsers } = await supabaseAdmin.auth.admin.listUsers();
+              userId = existingUsers?.users?.find(u => (u.email || '').toLowerCase() === normalizedEmail)?.id;
+            }
+            if (userId) {
+              await supabaseAdmin.from('admins').insert({
+                id: userId,
+                email: normalizedEmail,
+                role: userRole,
+                project_id: null
+              });
+            }
           } catch (insErr) {}
         } else {
-          // Allow registration/login as sales rep
-          isAuthorized = true;
-          userRole = requestedRole || 'sales';
-          try {
-            await supabaseAdmin.from('admins').insert({
-              id: crypto.randomUUID(),
-              email: normalizedEmail,
-              role: userRole
-            });
-          } catch (insErr) {}
+          // Deny unrecognized non-certifyied emails unless added by admin
+          isAuthorized = false;
         }
       } catch (dbErr) {
         console.warn('Supabase admins lookup warning:', dbErr.message);
@@ -192,22 +198,45 @@ export async function handleAutodialerRequest(request, env, ctx, path, method, u
             memberObj = updatedAdmin;
           }
         } else {
-          // Insert fresh row with mandatory UUID id
-          const newAdminId = crypto.randomUUID();
-          const { data: insertedAdmin, error: insErr } = await supabaseAdmin
-            .from('admins')
-            .insert({
-              id: newAdminId,
+          // Provision or find user in Supabase Auth to satisfy admins_id_fkey constraint
+          let userId = null;
+          try {
+            const { data: authUser, error: authErr } = await supabaseAdmin.auth.admin.createUser({
               email: normalizedEmail,
-              role: targetRole
-            })
-            .select('id, email, role, created_at')
-            .single();
+              email_confirm: true,
+              password: crypto.randomUUID()
+            });
 
-          if (!insErr && insertedAdmin) {
-            memberObj = insertedAdmin;
-          } else if (insErr) {
-            console.error('[SUPABASE ADMINS INSERT ERROR]:', insErr);
+            if (!authErr && authUser?.user?.id) {
+              userId = authUser.user.id;
+            } else if (authErr) {
+              const { data: existingUsers } = await supabaseAdmin.auth.admin.listUsers();
+              const matched = existingUsers?.users?.find(u => (u.email || '').toLowerCase() === normalizedEmail);
+              if (matched?.id) {
+                userId = matched.id;
+              }
+            }
+          } catch (authProvisionErr) {
+            console.warn('[AUTH PROVISION ERROR]:', authProvisionErr.message);
+          }
+
+          if (userId) {
+            const { data: insertedAdmin, error: insErr } = await supabaseAdmin
+              .from('admins')
+              .insert({
+                id: userId,
+                email: normalizedEmail,
+                role: targetRole,
+                project_id: null
+              })
+              .select('id, email, role, created_at')
+              .single();
+
+            if (!insErr && insertedAdmin) {
+              memberObj = insertedAdmin;
+            } else if (insErr) {
+              console.error('[SUPABASE ADMINS INSERT ERROR]:', insErr);
+            }
           }
         }
       } catch (dbE) {
