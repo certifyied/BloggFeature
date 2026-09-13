@@ -85,6 +85,11 @@ export default {
       path = path.slice(0, -1);
     }
 
+    // Normalize duplicated /adminApiBlog prefixes from misconfigured clients
+    while (path.startsWith('/adminApiBlog/adminApiBlog')) {
+      path = path.replace('/adminApiBlog/adminApiBlog', '/adminApiBlog');
+    }
+
     // Initialize Supabase Clients
     const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY, {
       auth: { persistSession: false }

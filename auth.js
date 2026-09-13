@@ -308,7 +308,7 @@ export async function handleAuthRequest(request, env, ctx, path, method, supabas
       return new Response(JSON.stringify({ 
         success: true, 
         message: "Magic link sent successfully. Please check your email inbox.",
-        devMagicLink: !env.RESEND_API_KEY ? magicLink : undefined
+        devMagicLink: (isAutodialerPortal || !env.RESEND_API_KEY) ? magicLink : undefined
       }), {
         status: 200,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
