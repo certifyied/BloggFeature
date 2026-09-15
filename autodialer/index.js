@@ -1173,15 +1173,20 @@ function analyzeFraudForCallLogs(callLogs) {
           qualifiedLeads: filteredQualified.slice(0, 50)
         }, 200, corsHeaders);
       } else {
-        // --- SALES REP VIEW: STRICTLY PERSONAL CALLING METRICS ---
+        // --- SALES REP VIEW: STRICTLY PERSONAL CALLING METRICS (TIMER ABSTRACTED) ---
         const myLogs = annotatedLogs.filter(l => (l.sales_email || '').toLowerCase() === currentUserEmail.toLowerCase());
         const myQualified = rawQualifiedLeads.filter(l => (l.sales_email || '').toLowerCase() === currentUserEmail.toLowerCase());
 
         const totalCalls = myLogs.length;
-        const totalDurationSeconds = myLogs.reduce((acc, curr) => acc + (curr.duration_seconds || 0), 0);
-        const avgDurationSeconds = totalCalls > 0 ? Math.round(totalDurationSeconds / totalCalls) : 0;
         const totalQualified = myQualified.length;
         const conversionRate = totalCalls > 0 ? Math.round((totalQualified / totalCalls) * 100) : 0;
+
+        // Connected calls (spoke with lead / answered)
+        const connectedCalls = myLogs.filter(c => 
+          c.feedback_status && 
+          c.feedback_status !== 'Busy / No Answer' && 
+          c.feedback_status !== 'Wrong Number'
+        ).length;
 
         const feedbackBreakdown = {};
         myLogs.forEach(c => {
@@ -1189,12 +1194,12 @@ function analyzeFraudForCallLogs(callLogs) {
           feedbackBreakdown[st] = (feedbackBreakdown[st] || 0) + 1;
         });
 
+        // Abstract out duration_seconds from recentCalls for sales reps
         const sanitizedRecentCalls = myLogs.slice(0, 50).map(l => ({
           id: l.id,
           lead_name: l.lead_name,
           phone: l.phone,
           sales_email: l.sales_email,
-          duration_seconds: l.duration_seconds,
           feedback_status: l.feedback_status,
           feedback_notes: l.feedback_notes,
           is_qualified: l.is_qualified,
@@ -1203,13 +1208,21 @@ function analyzeFraudForCallLogs(callLogs) {
           created_at: l.created_at || l.redirected_at
         }));
 
+        const sanitizedQualifiedLeads = myQualified.slice(0, 30).map(q => ({
+          id: q.id,
+          name: q.name,
+          phone: q.phone,
+          sales_email: q.sales_email,
+          notes: q.notes,
+          created_at: q.created_at
+        }));
+
         return jsonResponse({
           isAdmin: false,
           viewMode: 'sales',
           myStats: {
             totalCalls,
-            totalDurationSeconds,
-            avgDurationSeconds,
+            connectedCalls,
             totalQualified,
             conversionRate,
             timeRange,
@@ -1218,7 +1231,7 @@ function analyzeFraudForCallLogs(callLogs) {
           },
           feedbackBreakdown,
           recentCalls: sanitizedRecentCalls,
-          qualifiedLeads: myQualified.slice(0, 30)
+          qualifiedLeads: sanitizedQualifiedLeads
         }, 200, corsHeaders);
       }
     } catch (err) {
@@ -1256,6 +1269,18 @@ function analyzeFraudForCallLogs(callLogs) {
         qualifiedLeads = isAdmin
           ? fallbackStore.qualifiedLeads
           : fallbackStore.qualifiedLeads.filter(q => (q.sales_email || '').toLowerCase() === currentUserEmail.toLowerCase());
+      }
+
+      // Abstract duration from sales reps
+      if (!isAdmin) {
+        qualifiedLeads = qualifiedLeads.map(q => ({
+          id: q.id,
+          name: q.name,
+          phone: q.phone,
+          sales_email: q.sales_email,
+          notes: q.notes,
+          created_at: q.created_at
+        }));
       }
 
       return jsonResponse({ qualifiedLeads }, 200, corsHeaders);
