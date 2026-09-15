@@ -6,6 +6,7 @@ export const fallbackStore = {
   leads: [],
   callLogs: [],
   qualifiedLeads: [],
+  callbacks: [],
   salesTeam: [
     { email: 'sales@certifyied.com', role: 'sales', id: 'default_sales_1' }
   ]
@@ -19,6 +20,158 @@ function jsonResponse(data, status = 200, corsHeaders = {}) {
       'Content-Type': 'application/json',
     },
   });
+}
+
+export async function sendCallbackEmail(env, { repEmail, leadName, phone, callbackTime, notes, type = 'confirmation' }) {
+  const apiKey = env.RESEND_API_KEY;
+  if (!apiKey) {
+    console.warn('⚠️ RESEND_API_KEY not configured on server. Skipping callback email.');
+    return { success: false, error: 'RESEND_API_KEY not configured' };
+  }
+
+  let formattedDate = callbackTime;
+  try {
+    formattedDate = new Date(callbackTime).toLocaleString('en-US', {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true
+    });
+  } catch (e) {}
+
+  const isReminder = type === 'reminder';
+  const subject = isReminder
+    ? `⏰ Reminder: Scheduled Callback with ${leadName || 'Contact'} (${phone})`
+    : `📅 Callback Scheduled: ${leadName || 'Contact'} on ${formattedDate}`;
+
+  const heading = isReminder
+    ? `Callback Reminder: In ~15 Minutes`
+    : `Callback Appointment Scheduled`;
+
+  const leadInfoSection = `
+    <div style="background:#f8fafc;border-radius:12px;padding:20px;margin:20px 0;border:1px solid #e2e8f0;">
+      <p style="margin:0 0 6px 0;font-size:12px;color:#64748b;text-transform:uppercase;letter-spacing:0.5px;font-weight:600;">Contact Name</p>
+      <p style="margin:0 0 12px 0;font-size:16px;font-weight:700;color:#1e293b;">${leadName || 'Unknown Contact'}</p>
+      <p style="margin:0 0 6px 0;font-size:12px;color:#64748b;text-transform:uppercase;letter-spacing:0.5px;font-weight:600;">Phone Number</p>
+      <p style="margin:0 0 12px 0;font-size:16px;color:#0071e3;font-family:monospace;font-weight:700;"><a href="tel:${phone}" style="color:#0071e3;text-decoration:none;">${phone}</a></p>
+      <p style="margin:0 0 6px 0;font-size:12px;color:#64748b;text-transform:uppercase;letter-spacing:0.5px;font-weight:600;">Scheduled Callback Date & Time</p>
+      <p style="margin:0 0 12px 0;font-size:15px;font-weight:600;color:#0f172a;">🗓️ ${formattedDate}</p>
+      ${notes ? `<p style="margin:0 0 6px 0;font-size:12px;color:#64748b;text-transform:uppercase;letter-spacing:0.5px;font-weight:600;">Call Notes & Requirements</p><p style="margin:0;font-size:13px;color:#334155;background:#ffffff;padding:12px;border-radius:8px;border:1px solid #cbd5e1;line-height:1.4;">${notes}</p>` : ''}
+    </div>
+  `;
+
+  const emailPayload = {
+    to: [repEmail],
+    subject,
+    html: `
+      <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;background:#ffffff;color:#0f172a;padding:36px;border-radius:16px;max-width:520px;margin:auto;border:1px solid #e2e8f0;box-shadow:0 4px 12px rgba(0,0,0,0.05);">
+        <div style="text-align:center;margin-bottom:20px;">
+          <img src="https://certifyied.com/certifyied_logo.png" alt="Certifyied" style="height:38px;width:auto;margin:0 auto;display:block;" />
+        </div>
+        <h2 style="color:#0071e3;font-weight:700;margin:0 0 10px 0;text-align:center;font-size:20px;">${heading}</h2>
+        <p style="color:#475569;font-size:14px;line-height:1.5;text-align:center;margin:0 0 18px 0;">
+          ${isReminder ? `Your scheduled customer callback is coming up in approximately 15 minutes:` : `A callback has been recorded for your lead queue:`}
+        </p>
+        ${leadInfoSection}
+        <div style="text-align:center;margin:26px 0;">
+          <a href="https://www.certifyied.com/autodailer" style="display:inline-block;background:#0071e3;color:#ffffff;padding:12px 28px;border-radius:980px;font-weight:600;text-decoration:none;font-size:14px;box-shadow:0 4px 10px rgba(0,113,227,0.25);">Open Autodialer Workstation</a>
+        </div>
+        <hr style="border:0;border-top:1px solid #e2e8f0;margin:20px 0;" />
+        <p style="color:#94a3b8;font-size:11px;text-align:center;margin:0;">Certifyied Autodialer • Sales CRM Telemetry</p>
+      </div>
+    `,
+    text: `${heading}\n\nLead: ${leadName || 'Contact'}\nPhone: ${phone}\nScheduled Time: ${formattedDate}\nNotes: ${notes || 'None'}\n\nOpen Autodialer: https://www.certifyied.com/autodailer`
+  };
+
+  try {
+    let res = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        from: `Certifyied Autodialer <no-reply@send.certifyied.com>`,
+        ...emailPayload
+      })
+    });
+
+    if (!res.ok && (res.status === 403 || res.status === 422 || res.status === 400)) {
+      const fallbackRes = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({
+          from: `Certifyied Autodialer <onboarding@resend.dev>`,
+          ...emailPayload
+        })
+      });
+      if (fallbackRes.ok) {
+        return { success: true, provider: 'resend_fallback' };
+      }
+    }
+    return { success: res.ok };
+  } catch (err) {
+    console.warn('Callback email delivery failed:', err.message);
+    return { success: false, error: err.message };
+  }
+}
+
+export async function processScheduledCallbacks(env, supabaseAdmin) {
+  try {
+    const now = new Date();
+    // Look ahead 15 minutes
+    const futureWindow = new Date(now.getTime() + 15 * 60 * 1000).toISOString();
+
+    let upcoming = [];
+    try {
+      const { data, error } = await supabaseAdmin
+        .from('autodialer_callbacks')
+        .select('*')
+        .eq('status', 'pending')
+        .eq('notified_email', false)
+        .lte('callback_time', futureWindow);
+
+      if (!error && data) upcoming = data;
+    } catch (e) {}
+
+    // Fallback store check
+    if (upcoming.length === 0 && fallbackStore.callbacks?.length > 0) {
+      upcoming = fallbackStore.callbacks.filter(c =>
+        c.status === 'pending' &&
+        !c.notified_email &&
+        new Date(c.callback_time).getTime() <= (now.getTime() + 15 * 60 * 1000)
+      );
+    }
+
+    for (const cb of upcoming) {
+      await sendCallbackEmail(env, {
+        repEmail: cb.sales_email,
+        leadName: cb.lead_name,
+        phone: cb.phone,
+        callbackTime: cb.callback_time,
+        notes: cb.notes,
+        type: 'reminder'
+      });
+
+      try {
+        await supabaseAdmin
+          .from('autodialer_callbacks')
+          .update({ notified_email: true })
+          .eq('id', cb.id);
+      } catch (e) {}
+
+      const memCb = fallbackStore.callbacks?.find(c => c.id === cb.id);
+      if (memCb) memCb.notified_email = true;
+    }
+  } catch (err) {
+    console.error('Error in processScheduledCallbacks:', err);
+  }
 }
 
 export async function handleAutodialerRequest(request, env, ctx, path, method, url, payload, supabaseAdmin, corsHeaders, logAction) {
@@ -486,16 +639,32 @@ export async function handleAutodialerRequest(request, env, ctx, path, method, u
     }
   }
 
-  // --- 4. LIST ALL CAMPAIGNS ---
+  // --- 4. LIST CAMPAIGNS (MULTI-USER SCOPED FOR SALES, GLOBAL FOR ADMIN) ---
   if (subpath === '/campaigns' && method === 'GET') {
     try {
+      const urlObj = new URL(url);
+      const requestedRep = urlObj.searchParams.get('rep');
+
+      const isAdmin = payload && (
+        payload.role === 'admin' ||
+        payload.role === 'global' ||
+        (payload.email && payload.email.toLowerCase() === (env.ADMIN_EMAIL || '').toLowerCase())
+      );
+
       let campaigns = [];
       try {
-        const { data, error } = await supabaseAdmin
+        let query = supabaseAdmin
           .from('autodialer_campaigns')
           .select('*')
           .order('created_at', { ascending: false });
 
+        if (!isAdmin) {
+          query = query.eq('sales_email', currentUserEmail);
+        } else if (requestedRep && requestedRep !== 'all') {
+          query = query.eq('sales_email', requestedRep.toLowerCase());
+        }
+
+        const { data, error } = await query;
         if (!error && data) {
           campaigns = data;
         }
@@ -503,7 +672,11 @@ export async function handleAutodialerRequest(request, env, ctx, path, method, u
 
       // If Supabase has no data or table missing, combine with memory fallback
       if (campaigns.length === 0 && fallbackStore.campaigns.length > 0) {
-        campaigns = fallbackStore.campaigns;
+        campaigns = fallbackStore.campaigns.filter(c => {
+          if (!isAdmin && (c.sales_email || '').toLowerCase() !== currentUserEmail.toLowerCase()) return false;
+          if (isAdmin && requestedRep && requestedRep !== 'all' && (c.sales_email || '').toLowerCase() !== requestedRep.toLowerCase()) return false;
+          return true;
+        });
       }
 
       return jsonResponse({ campaigns }, 200, corsHeaders);
@@ -785,6 +958,63 @@ export async function handleAutodialerRequest(request, env, ctx, path, method, u
             callback_at: callbackAt || null
           });
         }
+
+        // 4. Record Scheduled Callback & Dispatch Email Notification
+        const isCallBack = feedbackStatus === 'Call Back' || !!callbackAt;
+        if (isCallBack && callbackAt) {
+          let cbName = leadName || 'Contact';
+          let cbPhone = phone || '';
+          if ((!cbName || cbName === 'Contact') && leadId) {
+            try {
+              const { data: ld } = await supabaseAdmin.from('autodialer_leads').select('name, phone').eq('id', leadId).single();
+              if (ld) {
+                cbName = ld.name;
+                cbPhone = ld.phone;
+              }
+            } catch (e) {}
+          }
+
+          const callbackId = crypto.randomUUID();
+          const callbackRecord = {
+            id: callbackId,
+            call_log_id: (callLogId && !callLogId.startsWith('log_')) ? callLogId : null,
+            lead_id: leadId || null,
+            campaign_id: campaignId || null,
+            sales_email: currentUserEmail,
+            lead_name: cbName,
+            phone: cbPhone,
+            callback_time: callbackAt,
+            notes: feedbackNotes || '',
+            status: 'pending',
+            notified_email: false,
+            notified_push: false,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          };
+
+          try {
+            await supabaseAdmin.from('autodialer_callbacks').insert(callbackRecord);
+          } catch (cbErr) {
+            console.warn('Supabase callback insert failed, saving to fallbackStore:', cbErr.message);
+          }
+          fallbackStore.callbacks.unshift(callbackRecord);
+
+          // Dispatch confirmation email via Resend
+          const emailPromise = sendCallbackEmail(env, {
+            repEmail: currentUserEmail,
+            leadName: cbName,
+            phone: cbPhone,
+            callbackTime: callbackAt,
+            notes: feedbackNotes,
+            type: 'confirmation'
+          });
+
+          if (ctx && ctx.waitUntil) {
+            ctx.waitUntil(emailPromise);
+          } else {
+            emailPromise.catch(e => console.warn('Callback email dispatch error:', e));
+          }
+        }
       } catch (err) {
         console.warn('Supabase end call log update error, using memory fallback:', err.message);
       }
@@ -828,6 +1058,29 @@ export async function handleAutodialerRequest(request, env, ctx, path, method, u
             notes: feedbackNotes,
             callback_at: callbackAt,
             created_at: new Date().toISOString()
+          });
+        }
+
+        // Memory fallback for callback
+        const isCallBack = feedbackStatus === 'Call Back' || !!callbackAt;
+        if (isCallBack && callbackAt && !fallbackStore.callbacks.some(c => c.call_log_id === callLogId)) {
+          const lName = memLead ? memLead.name : (memLog?.lead_name || leadName || 'Contact');
+          const lPhone = memLead ? memLead.phone : (memLog?.phone || phone || '');
+          fallbackStore.callbacks.unshift({
+            id: crypto.randomUUID(),
+            call_log_id: callLogId,
+            lead_id: leadId || null,
+            campaign_id: campaignId || null,
+            sales_email: currentUserEmail,
+            lead_name: lName,
+            phone: lPhone,
+            callback_time: callbackAt,
+            notes: feedbackNotes || '',
+            status: 'pending',
+            notified_email: false,
+            notified_push: false,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
           });
         }
       }
@@ -1284,6 +1537,87 @@ function analyzeFraudForCallLogs(callLogs) {
       }
 
       return jsonResponse({ qualifiedLeads }, 200, corsHeaders);
+    } catch (err) {
+      return jsonResponse({ error: err.message }, 500, corsHeaders);
+    }
+  }
+
+  // --- 10. GET SCHEDULED CALLBACKS ---
+  if (subpath === '/callbacks' && method === 'GET') {
+    try {
+      const isAdmin = payload && (
+        payload.role === 'admin' ||
+        payload.role === 'global' ||
+        (payload.email && payload.email.toLowerCase() === (env.ADMIN_EMAIL || '').toLowerCase())
+      );
+
+      const urlObj = new URL(url);
+      const requestedRep = urlObj.searchParams.get('rep');
+      const statusFilter = urlObj.searchParams.get('status') || 'pending';
+
+      let callbacks = [];
+      try {
+        let query = supabaseAdmin
+          .from('autodialer_callbacks')
+          .select('*')
+          .order('callback_time', { ascending: true });
+
+        if (!isAdmin) {
+          query = query.eq('sales_email', currentUserEmail);
+        } else if (requestedRep && requestedRep !== 'all') {
+          query = query.eq('sales_email', requestedRep.toLowerCase());
+        }
+
+        if (statusFilter !== 'all') {
+          query = query.eq('status', statusFilter);
+        }
+
+        const { data, error } = await query;
+        if (!error && data) {
+          callbacks = data;
+        }
+      } catch (e) {}
+
+      if (callbacks.length === 0 && fallbackStore.callbacks?.length > 0) {
+        callbacks = fallbackStore.callbacks.filter(c => {
+          if (!isAdmin && (c.sales_email || '').toLowerCase() !== currentUserEmail.toLowerCase()) return false;
+          if (isAdmin && requestedRep && requestedRep !== 'all' && (c.sales_email || '').toLowerCase() !== requestedRep.toLowerCase()) return false;
+          if (statusFilter !== 'all' && c.status !== statusFilter) return false;
+          return true;
+        });
+      }
+
+      return jsonResponse({ callbacks }, 200, corsHeaders);
+    } catch (err) {
+      return jsonResponse({ error: err.message }, 500, corsHeaders);
+    }
+  }
+
+  // --- 11. UPDATE CALLBACK STATUS ---
+  if (subpath.startsWith('/callbacks/') && (method === 'PATCH' || method === 'POST')) {
+    const callbackId = subpath.split('/')[2];
+    try {
+      const { status, notes, callbackTime } = await request.json();
+      const updates = {
+        updated_at: new Date().toISOString()
+      };
+      if (status) updates.status = status;
+      if (notes !== undefined) updates.notes = notes;
+      if (callbackTime) updates.callback_time = callbackTime;
+
+      try {
+        await supabaseAdmin.from('autodialer_callbacks').update(updates).eq('id', callbackId);
+      } catch (e) {}
+
+      const memCb = fallbackStore.callbacks?.find(c => c.id === callbackId);
+      if (memCb) {
+        if (status) memCb.status = status;
+        if (notes !== undefined) memCb.notes = notes;
+        if (callbackTime) memCb.callback_time = callbackTime;
+        memCb.updated_at = updates.updated_at;
+      }
+
+      return jsonResponse({ success: true, callbackId, updates }, 200, corsHeaders);
     } catch (err) {
       return jsonResponse({ error: err.message }, 500, corsHeaders);
     }

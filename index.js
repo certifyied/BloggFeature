@@ -5,7 +5,7 @@ import { handleReviewRequest, refreshSuggestionCache } from './reviews.js';
 import { handleAiRequest } from './ai.js';
 import { handleGoogleOauthRequest } from './google_oauth.js';
 import { handleAutoReplyRequest, scheduledSyncAllClients } from './autoreply.js';
-import { handleAutodialerRequest } from './autodialer/index.js';
+import { handleAutodialerRequest, processScheduledCallbacks } from './autodialer/index.js';
 
 // System Audit Logs Helper
 async function logAction(supabaseAdmin, email, action, details = {}, ip = '') {
@@ -55,7 +55,8 @@ export default {
 
     ctx.waitUntil(Promise.all([
       scheduledSyncAllClients(env, supabaseAdmin),
-      refreshSuggestionCache(env, supabaseAdmin)
+      refreshSuggestionCache(env, supabaseAdmin),
+      processScheduledCallbacks(env, supabaseAdmin)
     ]));
   },
 
