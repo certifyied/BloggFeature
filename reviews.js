@@ -601,7 +601,17 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
   // ==========================================
   // 2. ADMIN CLIENT MANAGEMENT ENDPOINTS (ADMIN ROLE REQUIRED)
   // ==========================================
-  const isAdmin = payload.role === 'admin' || payload.role === 'global';
+  let isAdmin = payload.role === 'admin' || payload.role === 'global' || payload.role === 'blogger';
+  if (!isAdmin && payload.email) {
+    const { data: adminRecord } = await supabaseAdmin
+      .from('admins')
+      .select('id, role')
+      .eq('email', payload.email.toLowerCase())
+      .maybeSingle();
+    if (adminRecord) {
+      isAdmin = true;
+    }
+  }
 
   if (path === '/adminApiBlog/api/reviews/clients/upload-logo' && method === 'POST') {
     const isAllowed = isAdmin || payload.role === 'client';
@@ -1123,7 +1133,6 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
   // 3b. ADMIN SYSTEM MONITORING ENDPOINT
   // ==========================================
   if (path === '/adminApiBlog/api/reviews/admin/monitoring') {
-    const isAdmin = payload && (payload.role === 'admin' || payload.role === 'global');
     if (!isAdmin) {
       return new Response(JSON.stringify({ error: "Forbidden. Invalid permissions." }), { 
         status: 403, 
@@ -1200,7 +1209,6 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
       targetClientId = payload.clientId;
     }
 
-    const isAdmin = payload && (payload.role === 'admin' || payload.role === 'global');
     let isAllowed = isAdmin;
 
     if (!isAllowed && payload && payload.role === 'client' && targetClientId) {
