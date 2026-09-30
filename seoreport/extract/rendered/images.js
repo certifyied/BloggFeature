@@ -1,0 +1,1 @@
+export { extractImages } from '../raw/images.js';

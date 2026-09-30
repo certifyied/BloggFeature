@@ -658,7 +658,7 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
   // GET Locations matching client email address (for multi-project selectors)
   if (path === '/adminApiBlog/api/reviews/clients/locations' && method === 'GET') {
     try {
-      const email = payload.email;
+      const email = payload.email || '';
       if (!email) {
         return new Response(JSON.stringify({ error: "Unauthorized. Email is required." }), {
           status: 401,
@@ -666,10 +666,32 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
         });
       }
 
-      const { data, error } = await supabaseAdmin
+      let isAdminUser = payload.role === 'admin' || payload.role === 'global' || payload.role === 'blogger';
+      if (!isAdminUser && env.ADMIN_EMAIL && email.toLowerCase() === env.ADMIN_EMAIL.toLowerCase()) {
+        isAdminUser = true;
+      }
+
+      // Check admins table directly in Supabase for this email
+      if (!isAdminUser) {
+        const { data: adminRecord } = await supabaseAdmin
+          .from('admins')
+          .select('id, role')
+          .eq('email', email.toLowerCase())
+          .maybeSingle();
+        if (adminRecord) {
+          isAdminUser = true;
+        }
+      }
+
+      let query = supabaseAdmin
         .from('review_clients')
-        .select('id, name, logo_url, google_review_link')
-        .eq('email', email.toLowerCase());
+        .select('id, name, logo_url, google_review_link, email, project_id');
+
+      if (!isAdminUser) {
+        query = query.eq('email', email.toLowerCase());
+      }
+
+      const { data, error } = await query;
 
       if (error) {
         return new Response(JSON.stringify({ error: error.message }), {
@@ -971,6 +993,27 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
   if (path === '/adminApiBlog/api/reviews/client/dashboard' && method === 'GET') {
     try {
       let clientId = url.searchParams.get('clientId') || payload.clientId;
+
+      // Admin fallback: If no clientId was passed, default to the first client location
+      if (!clientId && (payload.role === 'admin' || payload.role === 'global' || payload.role === 'blogger')) {
+        const { data: firstClient } = await supabaseAdmin
+          .from('review_clients')
+          .select('id')
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (firstClient) clientId = firstClient.id;
+      }
+
+      // Client fallback: If no clientId was passed for a client user, lookup their matched location
+      if (!clientId && payload.email) {
+        const { data: userClient } = await supabaseAdmin
+          .from('review_clients')
+          .select('id')
+          .eq('email', payload.email.toLowerCase())
+          .maybeSingle();
+        if (userClient) clientId = userClient.id;
+      }
 
       // Ensure that client-role users can only request dashboards for clients that match their authorized email
       if (payload.role === 'client') {

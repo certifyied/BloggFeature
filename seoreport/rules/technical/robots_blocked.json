@@ -1,0 +1,6 @@
+{
+  "id": "robots_blocked",
+  "category": "technical",
+  "weight": 10,
+  "severity": "critical"
+}

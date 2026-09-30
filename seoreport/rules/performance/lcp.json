@@ -1,0 +1,6 @@
+{
+  "id": "lcp",
+  "category": "performance",
+  "weight": 10,
+  "threshold_key": "lcp_ms"
+}

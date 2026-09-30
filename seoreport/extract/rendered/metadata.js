@@ -1,0 +1,1 @@
+export { extractMetadata } from '../raw/metadata.js';

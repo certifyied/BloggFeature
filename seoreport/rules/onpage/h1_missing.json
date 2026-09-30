@@ -1,0 +1,7 @@
+{
+  "id": "h1_missing",
+  "category": "onpage",
+  "weight": 7,
+  "severity": "high",
+  "type": "structural_warning"
+}

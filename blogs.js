@@ -30,7 +30,7 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
     if (imageMatch && request.method === 'GET') {
       try {
         if (!env.BUCKET) {
-          return new Response('R2 storage is disabled', { status: 503, headers: corsHeaders });
+          return new Response('Storage is disabled', { status: 503, headers: corsHeaders });
         }
         const key = decodeURIComponent(imageMatch[1]);
         const object = await env.BUCKET.get(key);
@@ -1250,24 +1250,30 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
       return new Response(JSON.stringify({ success: true }), { status: 200, headers: corsHeaders });
     }
 
-    // POST Image Upload to Cloudflare R2
+    // POST Image Upload to Supabase Storage
     if (path === '/adminApiBlog/api/upload' && request.method === 'POST') {
       try {
-        if (!env.BUCKET) {
-          return new Response(JSON.stringify({ error: "Image upload is temporarily disabled because Cloudflare R2 is not configured." }), {
-            status: 400,
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-          });
-        }
         const fileKey = `${crypto.randomUUID()}.jpg`;
         const contentType = request.headers.get('content-type') || 'image/jpeg';
         const bodyArrayBuffer = await request.arrayBuffer();
 
-        await env.BUCKET.put(fileKey, bodyArrayBuffer, {
-          httpMetadata: { contentType }
-        });
+        const { data, error } = await supabaseAdmin.storage
+          .from('blog_images')
+          .upload(fileKey, bodyArrayBuffer, {
+            contentType: contentType,
+            upsert: false
+          });
 
-        const accessUrl = `${url.origin}/adminApiBlog/cdn/image/${encodeURIComponent(fileKey)}`;
+        if (error) {
+          throw new Error(error.message);
+        }
+
+        const { data: publicUrlData } = supabaseAdmin.storage
+          .from('blog_images')
+          .getPublicUrl(fileKey);
+
+        const accessUrl = publicUrlData.publicUrl;
+
         return new Response(JSON.stringify({ url: accessUrl }), {
           status: 200,
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -2130,9 +2136,9 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
           </div>
 
           <div>
-            <label>Cover Image (Upload directly to R2 / S3)</label>
+            <label>Cover Image (Upload image)</label>
             <div style="display: flex; gap: 10px; margin-top: 5px;">
-              <input type="text" id="blog-cover-url" placeholder="R2 image URL matches here after uploading...">
+              <input type="text" id="blog-cover-url" placeholder="Image URL appears here after uploading...">
               <button class="btn" type="button" onclick="document.getElementById('cover-file-input').click()">📤 Upload Cover</button>
               <input type="file" id="cover-file-input" style="display: none;" onchange="uploadImage(this, 'blog-cover-url')">
             </div>
@@ -2235,8 +2241,9 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
 
 
 
-    // On Load Check for magic token first
+    // On Load Check for URL token or magic token
     const magicToken = params.get('magic_token');
+    const urlToken = params.get('token') || params.get('sso_token') || params.get('blog_auth_token');
     
     // Resolve logo image from parent origin query parameter dynamically
     const logoEl = document.getElementById('logo-img');
@@ -2248,11 +2255,23 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
       logoEl.src = logoSrc;
     }
 
-    if (magicToken) {
+    if (urlToken) {
+      token = urlToken;
+      localStorage.setItem('blog_auth_token', token);
+      showDashboard();
+    } else if (magicToken) {
       verifyMagicToken(magicToken);
     } else if (token) {
       showDashboard();
     }
+
+    window.addEventListener('message', (event) => {
+      if (event.data && (event.data.type === 'SET_AUTH_TOKEN' || event.data.type === 'AUTH_TOKEN') && event.data.token) {
+        token = event.data.token;
+        localStorage.setItem('blog_auth_token', token);
+        showDashboard();
+      }
+    });
 
     async function verifyMagicToken(mToken) {
       showToast("Verifying secure link...", "info");
@@ -2265,7 +2284,7 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
         const data = await res.json();
         if (res.ok && data.token) {
           token = data.token;
-          localStorage.setItem('blog_auth_token', token);
+          localStorage.setItem('blog_auth_token', token); try { if (window.parent !== window) { window.parent.postMessage({ type: 'AUTH_TOKEN', token: token }, '*'); } } catch(e) {}
           
           // Clean token from address bar
           const url = new URL(window.location.href);
@@ -2448,7 +2467,7 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
         const data = await res.json();
         if (res.ok) {
           token = data.token;
-          localStorage.setItem('blog_auth_token', token);
+          localStorage.setItem('blog_auth_token', token); try { if (window.parent !== window) { window.parent.postMessage({ type: 'AUTH_TOKEN', token: token }, '*'); } } catch(e) {}
           showDashboard();
         } else {
           showToast(data.error || "Incorrect OTP.");
@@ -3136,7 +3155,7 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
             <div style="flex:1; display:flex; flex-direction:column; gap:5px;">
               <label>Image \${i + 1}</label>
               <div style="display:flex; gap:10px;">
-                <input type="text" class="para-img-multi" id="\${inputId}" value="\${val}" placeholder="R2 image URL...">
+                <input type="text" class="para-img-multi" id="\${inputId}" value="\${val}" placeholder="Image URL...">
                 <button class="btn btn-secondary" type="button" onclick="document.getElementById('\${inputId}-file').click()">📤</button>
                 <input type="file" id="\${inputId}-file" style="display:none;" onchange="uploadImage(this, '\${inputId}')">
               </div>
@@ -3158,7 +3177,7 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
           <div style="margin-bottom:15px;">
             <label>Image Attachment</label>
             <div style="display:flex; gap:10px; margin-top:5px;">
-              <input type="text" class="para-img" id="\${blockId}-img" value="\${imgVal}" placeholder="R2 image URL...">
+              <input type="text" class="para-img" id="\${blockId}-img" value="\${imgVal}" placeholder="Image URL...">
               <button class="btn btn-secondary" type="button" onclick="document.getElementById('\${blockId}-img-file').click()">📤 Upload Image</button>
               <input type="file" id="\${blockId}-img-file" style="display:none;" onchange="uploadImage(this, '\${blockId}-img')">
             </div>
@@ -3189,7 +3208,7 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
       pDiv.quillInstance = quill;
     }
 
-    // --- UPLOAD HANDLER FOR CLOUDFLARE R2 ---
+    // --- UPLOAD HANDLER ---
     async function uploadImage(fileInput, targetInputId) {
       const file = fileInput.files[0];
       if (!file) return;
@@ -3212,7 +3231,7 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
         if (!res.ok) throw new Error("Upload request failed.");
         const data = await res.json();
         document.getElementById(targetInputId).value = data.url;
-        showToast("Image uploaded to R2 successfully!");
+        showToast("Image uploaded successfully!");
       } catch (err) {
         showToast("Upload failed: " + err.message);
       } finally {

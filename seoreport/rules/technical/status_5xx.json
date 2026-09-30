@@ -1,0 +1,6 @@
+{
+  "id": "status_5xx",
+  "category": "technical",
+  "weight": 10,
+  "severity": "critical"
+}

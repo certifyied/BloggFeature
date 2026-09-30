@@ -1,0 +1,1 @@
+export { extractSchema } from '../raw/schema.js';

@@ -1,0 +1,6 @@
+{
+  "id": "https_required",
+  "category": "technical",
+  "weight": 10,
+  "severity": "critical"
+}

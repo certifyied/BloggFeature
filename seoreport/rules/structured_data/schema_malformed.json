@@ -1,0 +1,6 @@
+{
+  "id": "schema_malformed",
+  "category": "structured_data",
+  "weight": 10,
+  "severity": "high"
+}

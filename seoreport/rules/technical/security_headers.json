@@ -1,0 +1,6 @@
+{
+  "id": "security_headers",
+  "category": "technical",
+  "weight": 3,
+  "severity": "low"
+}

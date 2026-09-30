@@ -6,6 +6,7 @@ import { handleAiRequest } from './ai.js';
 import { handleGoogleOauthRequest } from './google_oauth.js';
 import { handleAutoReplyRequest, scheduledSyncAllClients } from './autoreply.js';
 import { handleAutodialerRequest, processScheduledCallbacks } from './autodialer/index.js';
+import { handleSeoRequest } from './seoreport/routes/seo.js';
 
 // System Audit Logs Helper
 async function logAction(supabaseAdmin, email, action, details = {}, ip = '') {
@@ -113,7 +114,7 @@ export default {
     const method = request.method;
 
     // 1. Dispatch Auth requests
-    if (path.startsWith('/adminApiBlog/auth')) {
+    if (path.startsWith('/adminApiBlog/auth') || path.startsWith('/auth')) {
       const googleOauthRes = await handleGoogleOauthRequest(request, env, ctx, path, method, supabaseAdmin, corsHeaders);
       if (googleOauthRes) return googleOauthRes;
 
@@ -122,7 +123,7 @@ export default {
     }
 
     // 2. Dispatch Review requests
-    if (path.startsWith('/adminApiBlog/api/reviews')) {
+    if (path.startsWith('/adminApiBlog/api/reviews') || path.startsWith('/api/reviews')) {
       const autoReplyRes = await handleAutoReplyRequest(request, env, ctx, path, method, supabaseAdmin, corsHeaders, url, payload);
       if (autoReplyRes) return autoReplyRes;
 
@@ -131,15 +132,21 @@ export default {
     }
 
     // 2b. Dispatch AI requests
-    if (path.startsWith('/adminApiBlog/api/ai')) {
+    if (path.startsWith('/adminApiBlog/api/ai') || path.startsWith('/api/ai')) {
       const aiRes = await handleAiRequest(request, env, ctx, path, method, payload, corsHeaders);
       if (aiRes) return aiRes;
     }
 
     // 2c. Dispatch Autodialer requests
-    if (path.startsWith('/adminApiBlog/api/autodialer') || path.startsWith('/autodialer/api')) {
+    if (path.startsWith('/adminApiBlog/api/autodialer') || path.startsWith('/autodialer') || path.startsWith('/api/autodialer')) {
       const autodialerRes = await handleAutodialerRequest(request, env, ctx, path, method, url, payload, supabaseAdmin, corsHeaders, logAction);
       if (autodialerRes) return autodialerRes;
+    }
+
+    // 2d. Dispatch SEO Audit requests (handles both /seo/* and /adminApiBlog/api/seo/*)
+    if (path.startsWith('/adminApiBlog/api/seo') || path.startsWith('/seo') || path.startsWith('/api/seo')) {
+      const seoRes = await handleSeoRequest(request, env, ctx, path, method, url, payload, supabaseAdmin, corsHeaders);
+      if (seoRes) return seoRes;
     }
 
     // 3. Dispatch Blog requests

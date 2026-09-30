@@ -1,0 +1,6 @@
+{
+  "id": "redirect_chain",
+  "category": "technical",
+  "weight": 5,
+  "severity": "medium"
+}

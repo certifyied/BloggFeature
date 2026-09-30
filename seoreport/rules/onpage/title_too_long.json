@@ -1,0 +1,6 @@
+{
+  "id": "title_too_long",
+  "category": "onpage",
+  "weight": 5,
+  "severity": "medium"
+}

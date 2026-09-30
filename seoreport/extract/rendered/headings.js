@@ -1,0 +1,1 @@
+export { extractHeadings } from '../raw/headings.js';
