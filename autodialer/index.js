@@ -1105,6 +1105,108 @@ export async function handleAutodialerRequest(request, env, ctx, path, method, u
   }
 
 /**
+ * Helper to fetch all call logs across Supabase pagination boundaries (bypassing the 500 / 1000 row limits)
+ */
+async function fetchAllCallLogs(supabaseAdmin, { salesEmail, filterStart, filterEnd, maxRows = 50000 } = {}) {
+  const pageSize = 1000;
+  let allRows = [];
+  let from = 0;
+
+  try {
+    while (allRows.length < maxRows) {
+      let query = supabaseAdmin
+        .from('autodialer_call_logs')
+        .select('id, sales_email, phone, lead_name, duration_seconds, feedback_status, feedback_notes, is_qualified, redirected_at, returned_at, created_at');
+
+      if (salesEmail) {
+        query = query.eq('sales_email', salesEmail);
+      }
+      if (filterStart) {
+        query = query.gte('created_at', filterStart.toISOString());
+      }
+      if (filterEnd) {
+        query = query.lte('created_at', filterEnd.toISOString());
+      }
+
+      if (typeof query.order === 'function') {
+        query = query.order('created_at', { ascending: false });
+      }
+
+      if (typeof query.range === 'function') {
+        query = query.range(from, from + pageSize - 1);
+      } else if (typeof query.limit === 'function') {
+        query = query.limit(pageSize);
+      }
+
+      const { data, error } = await query;
+      if (error) {
+        console.error('Error fetching autodialer_call_logs:', error);
+        break;
+      }
+      if (!data || data.length === 0) break;
+      allRows.push(...data);
+      if (data.length < pageSize) break;
+      from += pageSize;
+    }
+  } catch (err) {
+    console.warn('fetchAllCallLogs caught error:', err);
+  }
+
+  return allRows;
+}
+
+/**
+ * Helper to fetch all qualified leads across Supabase pagination boundaries
+ */
+async function fetchAllQualifiedLeads(supabaseAdmin, { salesEmail, filterStart, filterEnd, maxRows = 20000 } = {}) {
+  const pageSize = 1000;
+  let allRows = [];
+  let from = 0;
+
+  try {
+    while (allRows.length < maxRows) {
+      let query = supabaseAdmin
+        .from('autodialer_qualified_leads')
+        .select('*');
+
+      if (salesEmail) {
+        query = query.eq('sales_email', salesEmail);
+      }
+      if (filterStart) {
+        query = query.gte('created_at', filterStart.toISOString());
+      }
+      if (filterEnd) {
+        query = query.lte('created_at', filterEnd.toISOString());
+      }
+
+      if (typeof query.order === 'function') {
+        query = query.order('created_at', { ascending: false });
+      }
+
+      if (typeof query.range === 'function') {
+        query = query.range(from, from + pageSize - 1);
+      } else if (typeof query.limit === 'function') {
+        query = query.limit(pageSize);
+      }
+
+      const { data, error } = await query;
+      if (error) {
+        console.error('Error fetching autodialer_qualified_leads:', error);
+        break;
+      }
+      if (!data || data.length === 0) break;
+      allRows.push(...data);
+      if (data.length < pageSize) break;
+      from += pageSize;
+    }
+  } catch (err) {
+    console.warn('fetchAllQualifiedLeads caught error:', err);
+  }
+
+  return allRows;
+}
+
+/**
  * Intelligent Sales Rep Fraud & Integrity Engine
  * Analyzes individual call duration and behavior patterns:
  * 1. GHOST_CALL: Micro-calls (<= 3s) aborted immediately to inflate call volumes
@@ -1274,49 +1376,6 @@ function analyzeFraudForCallLogs(callLogs) {
         (payload.email && payload.email.toLowerCase() === (env.ADMIN_EMAIL || '').toLowerCase())
       );
 
-      let rawCallLogs = [];
-      let rawQualifiedLeads = [];
-      let rawCampaigns = [];
-
-      try {
-        const { data: logs } = await supabaseAdmin
-          .from('autodialer_call_logs')
-          .select('*')
-          .order('created_at', { ascending: false })
-          .limit(500);
-        if (logs) {
-          rawCallLogs = logs.map(l => {
-            let dur = l.duration_seconds || 0;
-            if (dur === 0 && l.returned_at && l.redirected_at) {
-              dur = Math.max(1, Math.round((new Date(l.returned_at) - new Date(l.redirected_at)) / 1000));
-            }
-            return {
-              ...l,
-              duration_seconds: dur,
-              feedback_status: l.feedback_status || (l.returned_at ? 'Completed' : 'Called')
-            };
-          });
-        }
-
-        const { data: qLeads } = await supabaseAdmin
-          .from('autodialer_qualified_leads')
-          .select('*')
-          .order('created_at', { ascending: false })
-          .limit(200);
-        if (qLeads) rawQualifiedLeads = qLeads;
-
-        const { data: camps } = await supabaseAdmin
-          .from('autodialer_campaigns')
-          .select('*')
-          .order('created_at', { ascending: false });
-        if (camps) rawCampaigns = camps;
-      } catch (e) {}
-
-      // Merge with memory fallback if Supabase returned empty
-      if (rawCallLogs.length === 0) rawCallLogs = fallbackStore.callLogs;
-      if (rawQualifiedLeads.length === 0) rawQualifiedLeads = fallbackStore.qualifiedLeads;
-      if (rawCampaigns.length === 0) rawCampaigns = fallbackStore.campaigns;
-
       // Filter by Date Range (if specified)
       const timeRange = urlObj.searchParams.get('timeRange') || urlObj.searchParams.get('dateFilter') || 'all';
       const startDateParam = urlObj.searchParams.get('startDate');
@@ -1350,6 +1409,51 @@ function analyzeFraudForCallLogs(callLogs) {
           if (!isNaN(ed.getTime())) filterEnd = new Date(ed.getFullYear(), ed.getMonth(), ed.getDate(), 23, 59, 59, 999);
         }
       }
+
+      let rawCallLogs = [];
+      let rawQualifiedLeads = [];
+      let rawCampaigns = [];
+
+      try {
+        const logs = await fetchAllCallLogs(supabaseAdmin, {
+          salesEmail: !isAdmin ? currentUserEmail : undefined,
+          filterStart,
+          filterEnd
+        });
+        if (logs && logs.length > 0) {
+          rawCallLogs = logs.map(l => {
+            let dur = l.duration_seconds || 0;
+            if (dur === 0 && l.returned_at && l.redirected_at) {
+              dur = Math.max(1, Math.round((new Date(l.returned_at) - new Date(l.redirected_at)) / 1000));
+            }
+            return {
+              ...l,
+              duration_seconds: dur,
+              feedback_status: l.feedback_status || (l.returned_at ? 'Completed' : 'Called')
+            };
+          });
+        }
+
+        const qLeads = await fetchAllQualifiedLeads(supabaseAdmin, {
+          salesEmail: !isAdmin ? currentUserEmail : undefined,
+          filterStart,
+          filterEnd
+        });
+        if (qLeads && qLeads.length > 0) rawQualifiedLeads = qLeads;
+
+        const { data: camps } = await supabaseAdmin
+          .from('autodialer_campaigns')
+          .select('*')
+          .order('created_at', { ascending: false });
+        if (camps) rawCampaigns = camps;
+      } catch (e) {
+        console.warn('Analytics DB fetch error:', e);
+      }
+
+      // Merge with memory fallback if Supabase returned empty
+      if (rawCallLogs.length === 0 && fallbackStore.callLogs.length > 0) rawCallLogs = fallbackStore.callLogs;
+      if (rawQualifiedLeads.length === 0 && fallbackStore.qualifiedLeads.length > 0) rawQualifiedLeads = fallbackStore.qualifiedLeads;
+      if (rawCampaigns.length === 0 && fallbackStore.campaigns.length > 0) rawCampaigns = fallbackStore.campaigns;
 
       if (filterStart || filterEnd) {
         rawCallLogs = rawCallLogs.filter(l => {
@@ -1503,22 +1607,15 @@ function analyzeFraudForCallLogs(callLogs) {
 
       let qualifiedLeads = [];
       try {
-        let query = supabaseAdmin
-          .from('autodialer_qualified_leads')
-          .select('*')
-          .order('created_at', { ascending: false });
-
-        if (!isAdmin) {
-          query = query.eq('sales_email', currentUserEmail);
-        }
-
-        const { data, error } = await query;
-        if (!error && data) {
-          qualifiedLeads = data;
+        const qLeads = await fetchAllQualifiedLeads(supabaseAdmin, {
+          salesEmail: !isAdmin ? currentUserEmail : undefined
+        });
+        if (qLeads && qLeads.length > 0) {
+          qualifiedLeads = qLeads;
         }
       } catch (e) {}
 
-      if (qualifiedLeads.length === 0) {
+      if (qualifiedLeads.length === 0 && fallbackStore.qualifiedLeads.length > 0) {
         qualifiedLeads = isAdmin
           ? fallbackStore.qualifiedLeads
           : fallbackStore.qualifiedLeads.filter(q => (q.sales_email || '').toLowerCase() === currentUserEmail.toLowerCase());
