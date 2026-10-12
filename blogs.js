@@ -1285,7 +1285,7 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
 
     
     // --- CONTACT FORM API ENDPOINT ---
-    if (path === '/adminApiBlog/api/contact' && request.method === 'POST') {
+    if ((path === '/adminApiBlog/api/contact' || path === '/api/contact') && request.method === 'POST') {
       const projectId = url.searchParams.get('projectId');
       if (!projectId) {
         return new Response(JSON.stringify({ error: "projectId is required" }), { status: 400, headers: corsHeaders });
@@ -1328,7 +1328,8 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
       }
 
       try {
-        const { sender_name, sender_email, phone_number, subject, message } = await request.json();
+        const body = await request.json();
+        const { sender_name, sender_email, phone_number, subject, message } = body;
 
         if (!sender_email || !message) {
           return new Response(JSON.stringify({ error: "sender_email and message are required." }), { status: 400, headers: strictCorsHeaders });
@@ -1338,13 +1339,24 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
            return new Response(JSON.stringify({ error: "RESEND_API_KEY is missing in server environment." }), { status: 500, headers: strictCorsHeaders });
         }
 
+        // Push all relevant fields into the subject so details are always captured in subject line & logs
+        const subjectParts = [];
+        if (subject) subjectParts.push(subject);
+        if (sender_name) subjectParts.push(`Name: ${sender_name}`);
+        if (phone_number) subjectParts.push(`Phone: ${phone_number}`);
+        if (sender_email) subjectParts.push(`Email: ${sender_email}`);
+
+        const consolidatedSubject = subjectParts.length > 0 
+          ? subjectParts.join(' | ') 
+          : `New message from ${sender_name || sender_email}`;
+
         // Send Email via Resend
         const emailHtml = `
           <h2>New Contact Form Submission</h2>
           <p><strong>Name:</strong> ${sender_name || 'N/A'}</p>
           <p><strong>Email:</strong> ${sender_email}</p>
           <p><strong>Phone:</strong> ${phone_number || 'N/A'}</p>
-          <p><strong>Subject:</strong> ${subject || 'New Message'}</p>
+          <p><strong>Subject:</strong> ${consolidatedSubject}</p>
           <hr/>
           <p><strong>Message:</strong></p>
           <p>${message.replace(/\n/g, '<br>')}</p>
@@ -1361,27 +1373,67 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
           from: 'Review Manager Contact <no-reply@send.certifyied.com>',
           to: project.contact_email,
           reply_to: sender_email,
-          subject: subject || `New message from ${sender_name || sender_email}`,
+          subject: consolidatedSubject,
           html: emailHtml
         };
 
-        // Log to form_submissions first to prevent data loss, default status is 'pending'
-        const { data: insertedRows, error: insertErr } = await supabaseAdmin.from('form_submissions').insert({
-          project_id: projectId,
-          sender_name,
-          sender_email,
-          phone_number,
-          subject,
-          message,
-          ip_address: ip
-        }).select();
+        // Resilient DB logging: try with full fields first; if phone_number or other columns don't exist in DB schema, fallback gracefully
+        let submissionId = null;
+        try {
+          const insertPayload = {
+            project_id: projectId,
+            sender_name: sender_name || null,
+            sender_email,
+            subject: consolidatedSubject,
+            message,
+            ip_address: ip || null
+          };
+          if (phone_number) {
+            insertPayload.phone_number = phone_number;
+          }
 
-        if (insertErr) {
-          console.error("Database Insert Error:", insertErr);
-          return new Response(JSON.stringify({ error: "Failed to save submission." }), { status: 500, headers: strictCorsHeaders });
+          let { data: insertedRows, error: insertErr } = await supabaseAdmin
+            .from('form_submissions')
+            .insert(insertPayload)
+            .select();
+
+          // Fallback 1: If insert failed and phone_number was present, retry without phone_number column
+          if (insertErr && insertPayload.phone_number) {
+            console.warn("Database insert with phone_number failed, retrying without phone_number column:", insertErr);
+            delete insertPayload.phone_number;
+            const fallbackRes = await supabaseAdmin
+              .from('form_submissions')
+              .insert(insertPayload)
+              .select();
+            insertedRows = fallbackRes.data;
+            insertErr = fallbackRes.error;
+          }
+
+          // Fallback 2: If still failing (e.g. subject or ip_address column missing in older schemas), retry with minimal core columns
+          if (insertErr) {
+            console.warn("Database insert failed, retrying with core columns:", insertErr);
+            const corePayload = {
+              project_id: projectId,
+              sender_name: sender_name || null,
+              sender_email,
+              message: `[Subject: ${consolidatedSubject}]\n\n${message}`
+            };
+            const coreRes = await supabaseAdmin
+              .from('form_submissions')
+              .insert(corePayload)
+              .select();
+            insertedRows = coreRes.data;
+            insertErr = coreRes.error;
+          }
+
+          if (insertErr) {
+            console.error("Database Insert Error (all fallbacks exhausted):", insertErr);
+          } else {
+            submissionId = insertedRows?.[0]?.id;
+          }
+        } catch (dbErr) {
+          console.error("Unexpected error saving to form_submissions:", dbErr);
         }
-
-        const submissionId = insertedRows?.[0]?.id;
 
         const resendRes = await fetch('https://api.resend.com/emails', {
           method: 'POST',
@@ -1394,27 +1446,39 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
 
         if (!resendRes.ok) {
           const resendErr = await resendRes.text();
-          console.error("Resend Error (Submission saved successfully):", resendErr);
+          console.error("Resend Error:", resendErr);
           
           if (submissionId) {
-            // Update submission status to failed
-            await supabaseAdmin.from('form_submissions')
-              .update({ email_delivery_status: 'failed', delivery_error_message: resendErr.substring(0, 500) })
-              .eq('id', submissionId);
+            try {
+              // Update submission status to failed
+              await supabaseAdmin.from('form_submissions')
+                .update({ email_delivery_status: 'failed', delivery_error_message: resendErr.substring(0, 500) })
+                .eq('id', submissionId);
+            } catch (statusErr) {
+              console.warn("Could not update submission delivery status:", statusErr);
+            }
           }
 
           return new Response(JSON.stringify({ success: true, warning: "Saved to database, but notification email failed." }), { status: 200, headers: strictCorsHeaders });
         }
 
         if (submissionId) {
-          // Update submission status to success
-          await supabaseAdmin.from('form_submissions')
-            .update({ email_delivery_status: 'success' })
-            .eq('id', submissionId);
+          try {
+            // Update submission status to success
+            await supabaseAdmin.from('form_submissions')
+              .update({ email_delivery_status: 'success' })
+              .eq('id', submissionId);
+          } catch (statusErr) {
+            console.warn("Could not update submission delivery status:", statusErr);
+          }
         }
 
         // Log to audit_logs
-        await logAction(supabaseAdmin, 'system', 'contact_form_submitted', { project_id: projectId, sender_email, ip }, ip);
+        try {
+          await logAction(supabaseAdmin, 'system', 'contact_form_submitted', { project_id: projectId, sender_email, ip }, ip);
+        } catch (auditErr) {
+          console.warn("Could not write audit log:", auditErr);
+        }
 
         return new Response(JSON.stringify({ success: true, message: "Email sent successfully." }), { status: 200, headers: strictCorsHeaders });
       } catch (err) {
