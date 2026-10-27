@@ -1,4 +1,4 @@
-function generateLocalSuggestions(businessName, keywordsStr) {
+function generateLocalSuggestions(businessName, keywordsStr, count = 3) {
   const keywords = (keywordsStr || '')
     .split(',')
     .map(k => k.trim())
@@ -10,20 +10,39 @@ function generateLocalSuggestions(businessName, keywordsStr) {
   const k3 = keywords[2] || keywords[0] || defaultKeywords[2];
   const k4 = keywords[3] || keywords[1] || defaultKeywords[0];
 
-  const pool = [
-    `Outstanding service at ${businessName}! The team is extremely professional and they offer ${k1}. Had a very smooth experience.`,
-    `I highly recommend ${businessName}! The staff is genuinely friendly and did an amazing job with ${k2}. Will definitely return!`,
-    `Top-notch quality and support at ${businessName}. Professional environment and great attention to ${k3}. 5 stars!`,
-    `Extremely pleased with my visit to ${businessName}. Their expertise in ${k4} is outstanding and the customer care is amazing.`,
-    `Best experience ever at ${businessName}! Highly skilled team, clean facilities, and excellent support for ${k1}.`,
-    `Very professional and reliable service at ${businessName}. They made sure I was comfortable and did a great job with ${k2}.`,
-    `Highly recommend ${businessName} to everyone! They went above and beyond with ${k3} and exceeded my expectations.`,
-    `Super friendly staff and top-quality care at ${businessName}. Truly the best place for ${k4}!`
+  // Tier 1: Short & Punchy (1-2 sentences, ~15-25 words)
+  const poolShort = [
+    `Super fast and reliable service at ${businessName}! The team was very attentive with ${k1} and made everything effortless.`,
+    `Had a wonderful experience with ${businessName}. Top quality ${k2} and very friendly team, definitely 5 stars!`,
+    `Truly impressed with ${businessName}! Quick turnaround, honest pricing, and skilled work on ${k1}. Highly recommended.`,
+    `Great customer care and prompt support for ${k2}. ${businessName} is easily my top recommendation!`
   ];
 
-  // Pick 3 random unique templates from the pool
-  const shuffled = [...pool].sort(() => 0.5 - Math.random());
-  return shuffled.slice(0, 3);
+  // Tier 2: Warm Family / Personal (2-3 sentences, ~45-65 words)
+  const poolFamily = [
+    `My family and I had an amazing experience with ${businessName}. The staff was incredibly welcoming, patient, and made sure all our requirements were addressed with care. Their attention to ${k1} and ${k2} really sets them apart, and we will definitely be recommending them to our friends!`,
+    `Visited ${businessName} recently with my spouse and we were blown away by the hospitality and care. They handled our requirements with so much attention to detail and delivered fantastic ${k1}. It is so refreshing to see a team that genuinely cares about their customers.`,
+    `I brought my parents to ${businessName} and could not be happier with how smoothly everything went. From the moment we connected, the team treated us like family while taking care of ${k2}. Outstanding service and warm, dependable support!`
+  ];
+
+  // Tier 3: Eloquent / High-English Professional (5-7 sentences, ~85-125 words)
+  const poolHighEnglish = [
+    `The level of professionalism and meticulous attention to detail demonstrated by the team at ${businessName} was truly commendable. From the initial consultation through to the final execution, every single aspect of their service was handled with utmost transparency, precision, and diligence. Their expertise in ${k1} was evident from the outset, and they consistently went above and beyond to ensure our expectations were not merely met, but thoroughly exceeded. In an industry where reliability is rare, ${businessName} stands out as a benchmark of quality and integrity. I have zero hesitation in recommending them to anyone seeking dependable support and top-tier expertise.`,
+    `I would like to place on record my sincere appreciation for the exemplary service delivered by ${businessName}. Their staff demonstrated an admirable grasp of technical nuances and executed our requirements concerning ${k2} with impeccable precision. Communication remained seamless and courteous throughout the entire engagement, leaving no room for ambiguity or delay. It is exceedingly rare to encounter an organization that combines profound domain expertise with such a courteous, customer-centric approach. I wholeheartedly endorse ${businessName} for anyone who values dependable timelines, skilled workmanship, and peerless professionalism.`
+  ];
+
+  const results = [];
+  for (let i = 0; i < count; i++) {
+    const slot = i % 3;
+    if (slot === 0) {
+      results.push(poolShort[Math.floor(Math.random() * poolShort.length)]);
+    } else if (slot === 1) {
+      results.push(poolFamily[Math.floor(Math.random() * poolFamily.length)]);
+    } else {
+      results.push(poolHighEnglish[Math.floor(Math.random() * poolHighEnglish.length)]);
+    }
+  }
+  return results;
 }
 
 // Shared AI suggestion generator — used by /submit (sync and background) and cron
@@ -40,14 +59,13 @@ async function getWorkingModel(env) {
   console.log('[ModelCheck] Stale or missing working model. Running health check...');
   const testPrompt = "respond ONLY with the word 'OK'";
   
-  // Checks nvidia/nemotron-3-ultra-550b-a55b:free first, then other fallback models
   const testModels = [
     "nvidia/nemotron-3-ultra-550b-a55b:free",
-    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
-    "meta-llama/llama-3.3-70b-instruct:free",
-    "meta-llama/llama-3.2-3b-instruct:free",
-    "tencent/hy3:free",
-    "openai/gpt-oss-20b:free"
+    "nvidia/nemotron-3.5-lightning:free",
+    "liquid/lfm-2.5-2.6b:free",
+    "minimax/minimax-m3.1-flash:free",
+    "google/gemma-4-31b-it:free",
+    "google/gemma-4-26b-a4b-it:free"
   ];
 
   for (const model of testModels) {
@@ -63,14 +81,15 @@ async function getWorkingModel(env) {
         body: JSON.stringify({
           model: model,
           messages: [{ role: 'user', content: testPrompt }],
-          max_tokens: 5,
+          reasoning: { effort: 'none' },
+          max_tokens: 300,
           temperature: 0.1
         })
       });
 
       if (res.ok) {
         const data = await res.json();
-        if (data && data.choices?.[0]?.message?.content) {
+        if (data && (data.choices?.[0]?.message?.content || data.choices?.[0]?.message?.reasoning)) {
           console.log(`[ModelCheck] Active model discovered: ${model}`);
           cachedWorkingModel = model;
           lastModelCheckTime = now;
@@ -83,8 +102,8 @@ async function getWorkingModel(env) {
     }
   }
 
-  // Fallback if all test checks fail (using a free model)
-  return "meta-llama/llama-3.2-3b-instruct:free";
+  // Fallback if all test checks fail
+  return "nvidia/nemotron-3-ultra-550b-a55b:free";
 }
 
 // Shared AI suggestion generator — used by /submit (sync and background) and cron
@@ -103,30 +122,57 @@ async function generateAISuggestions(env, supabaseAdmin, client, customSuggestio
   const actualCustomSuggestions = customSuggestions.length > 0 ? customSuggestions : (client.custom_suggestions || []);
   if (actualCustomSuggestions.length > 0) {
     const randomIndex = Math.floor(Math.random() * actualCustomSuggestions.length);
-    guidanceTemplate = ` Use this user-provided example template as a reference for tone/style: "${actualCustomSuggestions[randomIndex]}".`;
+    guidanceTemplate = `\nUse this user-provided example template as a reference for tone/style: "${actualCustomSuggestions[randomIndex]}".\n`;
   }
 
   // Generate dynamic array example formatting for the prompt based on the requested count
   const dummyExamples = [];
   for (let i = 0; i < Math.min(count, 3); i++) {
-    dummyExamples.push(`"Review variation ${i + 1} incorporating ${client.name} and keywords..."`);
+    if (i % 3 === 0) {
+      dummyExamples.push(`"Short 1-2 line review (~20 words)..."`);
+    } else if (i % 3 === 1) {
+      dummyExamples.push(`"Warm family or personal review (~50 words)..."`);
+    } else {
+      dummyExamples.push(`"Articulate high-English professional review (~90 words)..."`);
+    }
   }
   const dummyJSON = `{\n  "reviews": [\n    ${dummyExamples.join(',\n    ')}\n  ]\n}`;
 
-  // Prompt to ensure human-like friendly paragraphs with no punctuation
-  const systemPrompt = `You are a warm, casual customer writing a friendly, enthusiastic Google review for a business named "${client.name}".
-The business has specified these keywords which MUST be woven naturally and contextually into the review variations:
-${keywordsList.length > 0 ? keywordsList.map(kw => `- ${kw}`).join('\n') : '- excellent service'}
+  const industryStr = (client.industry || '').trim();
+  const domainInstruction = industryStr
+    ? `1. INDUSTRY / SECTOR: "${industryStr}". The business strictly operates in the "${industryStr}" sector. All reviews MUST be explicitly grounded in realistic services, products, and customer scenarios authentic to this specific industry without guesswork.`
+    : `1. Analyze the business name "${client.name}" and the keywords [${keywordsList.join(', ')}].\n2. Infer what this business does (e.g. AC/appliances repair, dental/medical clinic, luxury resort/stay, furniture & home decor, dining/restaurant, retail, salon, automotive, legal, etc.).`;
+
+  const systemPrompt = `You are an AI generating authentic, natural 5-star Google review suggestions for a business named "${client.name}"${industryStr ? ` in the "${industryStr}" industry` : ''}.
+
+CONTEXT & DOMAIN REASONING:
+${domainInstruction}
+${industryStr ? '2' : '3'}. Ground every review in realistic, believable scenarios that real clients encounter in this specific domain. Avoid artificial clichés and robotic praise.
+
+MANDATORY PERSONAS AND LENGTH ROTATION:
+Generate exactly ${count} distinct positive (5-star) review suggestions. Every consecutive set of 3 reviews MUST strictly follow this exact rotating pattern:
+
+- REVIEW 1 (or 3k+1) — SHORT & PUNCHY (1-2 sentences, ~15-25 words):
+  * Persona: Busy, direct mobile user leaving quick praise.
+  * Tone: Casual, punchy, straight to the point. Focuses on speed, quality, and satisfaction.
+
+- REVIEW 2 (or 3k+2) — WARM FAMILY / PERSONAL (2-3 sentences, ~45-65 words):
+  * Persona: Warm, community-minded customer mentioning personal/family experience ("My family and I visited...", "I came here with my spouse...", "Brought my parents...").
+  * Tone: Friendly, heartfelt, highly appreciative. Highlights welcoming staff, patience, and comfort.
+
+- REVIEW 3 (or 3k+3) — ELOQUENT / HIGH-ENGLISH PROFESSIONAL (5-7 sentences, ~85-125 words):
+  * Persona: Articulate professional with high English proficiency.
+  * Tone: Thoughtful, polished, sophisticated vocabulary (e.g., "exemplary", "impeccable", "meticulous attention to detail", "commendable diligence", "seamless experience").
+  * Structure: Details the initial requirement/problem, the team's domain expertise, the smooth execution, and an earnest recommendation.
+
+KEYWORDS INTEGRATION:
+Naturally weave in these keywords contextually without forcing or keyword-stuffing:
+${keywordsList.length > 0 ? keywordsList.map(kw => `- ${kw}`).join('\n') : '- excellent service, professional staff'}
 
 ${guidanceTemplate}
 
-Generate exactly ${count} distinct, positive (5-star) review variations.
-Guidelines:
-1. Make each review variation a single detailed, big paragraph (friendly and highly human-like).
-2. Crucial rule: Do not use ANY punctuation marks at all in the review text (absolutely no periods, commas, exclamation marks, question marks, apostrophes, hyphens, or quotes).
-3. The reviews must feel 100% written by different real human customers typing a warm casual review.
-4. Incorporate the name "${client.name}" and the specified keywords naturally.
-5. Respond ONLY with a valid, clean JSON object containing an array of strings under the key "reviews". Example output format for ${count} variations:
+OUTPUT FORMAT:
+Respond ONLY with a valid, clean JSON object with the exact key "reviews" containing an array of ${count} strings:
 ${dummyJSON}`;
 
   let models = [];
@@ -149,12 +195,12 @@ ${dummyJSON}`;
     models = [
       activeModel,
       "nvidia/nemotron-3-ultra-550b-a55b:free",
-      "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
-      "meta-llama/llama-3.3-70b-instruct:free",
-      "meta-llama/llama-3.2-3b-instruct:free",
-      "tencent/hy3:free",
-      "openai/gpt-oss-20b:free"
-    ].filter((v, i, a) => a.indexOf(v) === i); // Remove duplicates
+      "nvidia/nemotron-3.5-lightning:free",
+      "liquid/lfm-2.5-2.6b:free",
+      "minimax/minimax-m3.1-flash:free",
+      "google/gemma-4-31b-it:free",
+      "google/gemma-4-26b-a4b-it:free"
+    ].filter((v, i, a) => Boolean(v) && a.indexOf(v) === i);
   }
 
   let responseText = null;
@@ -166,14 +212,16 @@ ${dummyJSON}`;
         model: model,
         messages: [
           { role: 'system', content: systemPrompt },
-          { role: 'user', content: `Generate positive reviews utilizing keywords: ${client.ai_keywords || ''} (Request ID: ${randomSeed})` }
+          { role: 'user', content: `Generate positive reviews with realistic context for "${client.name}"${industryStr ? ` (Industry: ${industryStr})` : ''} incorporating keywords: ${client.ai_keywords || ''} (Request ID: ${randomSeed})` }
         ],
-        temperature: 0.85
+        temperature: 0.7,
+        max_tokens: 3500
       };
 
-      // Add seed and response_format for OpenRouter models
+      // Add seed, json_object formatting, and disable reasoning tokens so output is clean JSON without thinking monologue
       if (provider === 'openrouter') {
         requestBody.response_format = { type: 'json_object' };
+        requestBody.reasoning = { effort: 'none' };
         requestBody.seed = randomSeed;
       }
 
@@ -185,8 +233,13 @@ ${dummyJSON}`;
 
       if (aiRes.ok) {
         const aiData = await aiRes.json();
-        responseText = aiData.choices?.[0]?.message?.content;
-        if (responseText) {
+        let rawContent = aiData.choices?.[0]?.message?.content;
+        if (!rawContent && aiData.choices?.[0]?.message?.reasoning) {
+          rawContent = aiData.choices?.[0]?.message?.reasoning;
+        }
+
+        if (rawContent) {
+          responseText = rawContent;
           console.log(`[generateAISuggestions] Successfully generated using model: ${model} via ${provider}`);
           
           // Log call to audit_logs
@@ -218,26 +271,80 @@ ${dummyJSON}`;
 
   if (!responseText) return null;
 
-  // Robust JSON extractor and parser
+  // Resilient multi-layer parser: handles thinking tags, markdown fences, JSON objects/arrays, and truncated outputs
   try {
-    let cleanText = responseText.trim();
-    const match = cleanText.match(/\{[\s\S]*\}/);
-    if (match) {
-      cleanText = match[0];
+    // 1. Strip <think>...</think> blocks
+    let cleanText = responseText.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+
+    // 2. Strip markdown code fences (```json or ```)
+    cleanText = cleanText.replace(/^```(?:json)?/gim, '').replace(/```$/gim, '').trim();
+
+    let candidateReviews = null;
+
+    // 3. Locate JSON object { ... }
+    const firstBrace = cleanText.indexOf('{');
+    const lastBrace = cleanText.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace > firstBrace) {
+      try {
+        const parsed = JSON.parse(cleanText.slice(firstBrace, lastBrace + 1));
+        const list = parsed.reviews || parsed.examples || parsed.data;
+        if (Array.isArray(list) && list.length > 0) {
+          candidateReviews = list;
+        }
+      } catch (innerErr) {
+        // Fall through to regex string extractor
+      }
     }
-    const parsed = JSON.parse(cleanText);
-    const result = parsed.reviews || parsed.examples || (Array.isArray(parsed) ? parsed : null);
-    if (Array.isArray(result) && result.length > 0) {
-      // Strip all punctuation marks from each suggestion programmatically
-      return result.map(s => 
-        (typeof s === 'string' ? s : '')
-          .replace(/[.,\/#!$%\^&\*;:{}=\-_`~()?"']/g, "")
-          .replace(/\s+/g, " ")
-          .trim()
-      ).filter(Boolean);
+
+    // 4. Locate JSON array [ ... ] if object parse wasn't found
+    if (!candidateReviews) {
+      const firstBracket = cleanText.indexOf('[');
+      const lastBracket = cleanText.lastIndexOf(']');
+      if (firstBracket !== -1 && lastBracket > firstBracket) {
+        try {
+          const parsedArr = JSON.parse(cleanText.slice(firstBracket, lastBracket + 1));
+          if (Array.isArray(parsedArr) && parsedArr.length > 0) {
+            candidateReviews = parsedArr;
+          }
+        } catch (innerErr) {
+          // Fall through
+        }
+      }
+    }
+
+    // 5. Truncated or malformed JSON regex recovery:
+    // Pull out all quoted strings of review length (filters out keys like "reviews")
+    if (!candidateReviews || candidateReviews.length === 0) {
+      const extractedStrings = [...cleanText.matchAll(/"((?:[^"\\]|\\.)*)"/g)]
+        .map(m => m[1].replace(/\\"/g, '"').trim())
+        .filter(s => s && s.toLowerCase() !== 'reviews' && s.length >= 15);
+      if (extractedStrings.length > 0) {
+        candidateReviews = extractedStrings;
+      }
+    }
+
+    // 6. Numbered list fallback: lines starting with 1., 2., -, etc.
+    if (!candidateReviews || candidateReviews.length === 0) {
+      const listLines = cleanText.split('\n')
+        .map(l => l.replace(/^[\d+.)\-*\s]+/, '').replace(/^["']|["']$/g, '').trim())
+        .filter(l => l.length >= 15 && !l.toLowerCase().startsWith('we need to') && !l.toLowerCase().startsWith('here are'));
+      if (listLines.length > 0) {
+        candidateReviews = listLines;
+      }
+    }
+
+    if (Array.isArray(candidateReviews) && candidateReviews.length > 0) {
+      return candidateReviews.map(s => {
+        if (typeof s !== 'string') return '';
+        let clean = s.trim();
+        clean = clean.replace(/^["']|["']$/g, '');
+        clean = clean.replace(/[*_`#]/g, '');
+        clean = clean.replace(/\s+/g, ' ');
+        return clean.trim();
+      }).filter(Boolean);
     }
   } catch (parseErr) {
-    console.error(`[generateAISuggestions] JSON parsing failed for response: ${responseText.substring(0, 150)}... Error: ${parseErr.message}`);
+    console.error(`[generateAISuggestions] Parser exception: ${parseErr.message} for snippet: ${responseText.substring(0, 150)}...`);
   }
 
   return null;
@@ -513,11 +620,7 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
               let freshExamples = await generateAISuggestions(env, supabaseAdmin, client, customSuggestions, 20);
               if (!freshExamples || freshExamples.length === 0) {
                 // Generate 20 local fallback suggestions if AI fails
-                freshExamples = [];
-                for (let i = 0; i < 7; i++) {
-                  freshExamples.push(...generateLocalSuggestions(client.name, client.ai_keywords));
-                }
-                freshExamples = freshExamples.slice(0, 20);
+                freshExamples = generateLocalSuggestions(client.name, client.ai_keywords, 20);
               }
 
               await supabaseAdmin.from('review_clients').update({
@@ -601,15 +704,19 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
   // ==========================================
   // 2. ADMIN CLIENT MANAGEMENT ENDPOINTS (ADMIN ROLE REQUIRED)
   // ==========================================
-  let isAdmin = payload.role === 'admin' || payload.role === 'global' || payload.role === 'blogger';
-  if (!isAdmin && payload.email) {
-    const { data: adminRecord } = await supabaseAdmin
-      .from('admins')
-      .select('id, role')
-      .eq('email', payload.email.toLowerCase())
-      .maybeSingle();
-    if (adminRecord) {
+  let isAdmin = (payload.role === 'admin' || payload.role === 'global') && payload.role !== 'client';
+  if (!isAdmin && payload.email && payload.role !== 'client') {
+    if (env.ADMIN_EMAIL && payload.email.toLowerCase() === env.ADMIN_EMAIL.toLowerCase()) {
       isAdmin = true;
+    } else {
+      const { data: adminRecord } = await supabaseAdmin
+        .from('admins')
+        .select('id, role')
+        .eq('email', payload.email.toLowerCase())
+        .maybeSingle();
+      if (adminRecord && (adminRecord.role === 'admin' || adminRecord.role === 'global')) {
+        isAdmin = true;
+      }
     }
   }
 
@@ -676,28 +783,29 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
         });
       }
 
-      let isAdminUser = payload.role === 'admin' || payload.role === 'global' || payload.role === 'blogger';
-      if (!isAdminUser && env.ADMIN_EMAIL && email.toLowerCase() === env.ADMIN_EMAIL.toLowerCase()) {
+      let isAdminUser = (payload.role === 'admin' || payload.role === 'global') && payload.role !== 'client';
+      if (!isAdminUser && env.ADMIN_EMAIL && email.toLowerCase() === env.ADMIN_EMAIL.toLowerCase() && payload.role !== 'client') {
         isAdminUser = true;
       }
 
-      // Check admins table directly in Supabase for this email
-      if (!isAdminUser) {
+      // Check admins table directly in Supabase for this email ONLY if role is not explicitly client
+      if (!isAdminUser && payload.role !== 'client') {
         const { data: adminRecord } = await supabaseAdmin
           .from('admins')
           .select('id, role')
           .eq('email', email.toLowerCase())
           .maybeSingle();
-        if (adminRecord) {
+        if (adminRecord && (adminRecord.role === 'admin' || adminRecord.role === 'global')) {
           isAdminUser = true;
         }
       }
 
       let query = supabaseAdmin
         .from('review_clients')
-        .select('id, name, logo_url, google_review_link, email, project_id');
+        .select('id, name, logo_url, google_review_link, email, project_id, industry');
 
-      if (!isAdminUser) {
+      // CRITICAL: Client-role users or non-admin users ONLY ever see their own locations
+      if (!isAdminUser || payload.role === 'client') {
         query = query.eq('email', email.toLowerCase());
       }
 
@@ -767,7 +875,7 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
     // POST Create Client
     if (method === 'POST') {
       try {
-        const { project_id, name, email, google_review_link, ai_keywords, suggestion_type, custom_suggestions, copy_mode, logo_url } = await request.json();
+        const { project_id, name, email, google_review_link, ai_keywords, suggestion_type, custom_suggestions, copy_mode, logo_url, industry } = await request.json();
 
         if (!project_id || !name || !email || !google_review_link) {
           return new Response(JSON.stringify({ error: "Missing required fields (project_id, name, email, google_review_link)." }), { 
@@ -776,57 +884,57 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
           });
         }
 
-        // 1. Create client user in Auth and admins table first
+        // 1. Check if client user already exists in admins table or auth
         let userId = null;
         if (env.SUPABASE_SERVICE_ROLE_KEY) {
           try {
-            const { data: authUser, error: authError } = await supabaseAdmin.auth.admin.createUser({
-              email: email.toLowerCase(),
-              email_confirm: true,
-              password: Math.random().toString(36).substring(2, 15)
-            });
-
-            if (authError) {
-              if (authError.message.includes("already registered") || authError.message.includes("already exists")) {
-                const { data: existingUsers, error: listError } = await supabaseAdmin.auth.admin.listUsers();
-                if (listError) throw listError;
-                const matched = existingUsers.users.find(u => u.email.toLowerCase() === email.toLowerCase());
-                if (matched) {
-                  userId = matched.id;
-                } else {
-                  throw authError;
-                }
-              } else {
-                throw authError;
-              }
-            } else {
-              userId = authUser.user.id;
-            }
-            
-            // Check if the user is already in the admins table
             const { data: existingAdmin } = await supabaseAdmin
               .from('admins')
               .select('id, role, project_id')
               .eq('email', email.toLowerCase())
               .maybeSingle();
 
-            if (!existingAdmin) {
-              // Insert into admins table only if they don't exist yet
-              await supabaseAdmin.from('admins').insert({
-                id: userId,
+            if (existingAdmin) {
+              userId = existingAdmin.id;
+              if (existingAdmin.role === 'client' && !existingAdmin.project_id) {
+                await supabaseAdmin.from('admins').update({ project_id }).eq('id', userId);
+              }
+            } else {
+              // Not in admins table yet — create auth user and insert admin record
+              const { data: authUser, error: authError } = await supabaseAdmin.auth.admin.createUser({
                 email: email.toLowerCase(),
-                role: 'client',
-                project_id
+                email_confirm: true,
+                password: Math.random().toString(36).substring(2, 15)
               });
-            } else if (existingAdmin.role === 'client' && !existingAdmin.project_id) {
-              // Update project_id if they exist but it was null
-              await supabaseAdmin.from('admins').update({ project_id }).eq('id', userId);
+
+              if (authUser && authUser.user) {
+                userId = authUser.user.id;
+              } else if (authError && (authError.message.includes("already registered") || authError.message.includes("already exists"))) {
+                // If user was already in auth.users, find their id
+                let page = 1;
+                while (!userId && page <= 5) {
+                  const { data: userPage } = await supabaseAdmin.auth.admin.listUsers({ page, perPage: 100 });
+                  if (!userPage || !userPage.users || userPage.users.length === 0) break;
+                  const matched = userPage.users.find(u => u.email.toLowerCase() === email.toLowerCase());
+                  if (matched) {
+                    userId = matched.id;
+                    break;
+                  }
+                  page++;
+                }
+              }
+
+              if (userId) {
+                await supabaseAdmin.from('admins').insert({
+                  id: userId,
+                  email: email.toLowerCase(),
+                  role: 'client',
+                  project_id
+                });
+              }
             }
           } catch (e) {
-            return new Response(JSON.stringify({ error: "Failed to provision client user: " + e.message }), { 
-              status: 500, 
-              headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
-            });
+            console.warn("Client user auth provisioning non-fatal notice:", e.message);
           }
         } else {
           return new Response(JSON.stringify({ error: "Configuration Error: SUPABASE_SERVICE_ROLE_KEY is required to register clients." }), { 
@@ -836,21 +944,34 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
         }
 
         // 2. Insert into review_clients
-        const { data, error } = await supabaseAdmin
+        const insertPayload = {
+          project_id,
+          name,
+          email: email.toLowerCase(),
+          google_review_link,
+          ai_keywords: ai_keywords || '',
+          suggestion_type: suggestion_type || 'ai',
+          custom_suggestions: custom_suggestions || [],
+          copy_mode: copy_mode || 'auto',
+          logo_url: logo_url || null
+        };
+        if (industry !== undefined && industry !== null) {
+          insertPayload.industry = industry.trim();
+        }
+
+        let { data, error } = await supabaseAdmin
           .from('review_clients')
-          .insert({
-            project_id,
-            name,
-            email: email.toLowerCase(),
-            google_review_link,
-            ai_keywords: ai_keywords || '',
-            suggestion_type: suggestion_type || 'ai',
-            custom_suggestions: custom_suggestions || [],
-            copy_mode: copy_mode || 'auto',
-            logo_url: logo_url || null
-          })
+          .insert(insertPayload)
           .select()
           .single();
+
+        if (error && error.code === 'PGRST204' && insertPayload.industry !== undefined) {
+          console.warn("industry column not yet present in Supabase review_clients. Retrying without industry.");
+          delete insertPayload.industry;
+          const retry = await supabaseAdmin.from('review_clients').insert(insertPayload).select().single();
+          data = retry.data;
+          error = retry.error;
+        }
 
         if (error) {
           return new Response(JSON.stringify({ error: error.message }), { 
@@ -876,7 +997,7 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
     // PUT Update Client
     if (method === 'PUT') {
       try {
-        const { id, name, email, google_review_link, ai_keywords, suggestion_type, custom_suggestions, copy_mode, logo_url } = await request.json();
+        const { id, name, email, google_review_link, ai_keywords, suggestion_type, custom_suggestions, copy_mode, logo_url, industry } = await request.json();
 
         if (!id) {
           return new Response(JSON.stringify({ error: "Client id is required." }), { 
@@ -885,11 +1006,19 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
           });
         }
 
-        if (payload.role === 'client' && payload.clientId !== id) {
-          return new Response(JSON.stringify({ error: "Forbidden. You can only update your own organizational settings." }), { 
-            status: 403, 
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
-          });
+        if (payload.role === 'client') {
+          const { data: clientRec } = await supabaseAdmin
+            .from('review_clients')
+            .select('email')
+            .eq('id', id)
+            .maybeSingle();
+
+          if (!clientRec || clientRec.email.toLowerCase() !== (payload.email || '').toLowerCase()) {
+            return new Response(JSON.stringify({ error: "Forbidden. You can only update your own organizational settings." }), { 
+              status: 403, 
+              headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+            });
+          }
         }
 
         const updateFields = {
@@ -905,13 +1034,24 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
         if (email) {
           updateFields.email = email.toLowerCase();
         }
+        if (industry !== undefined) {
+          updateFields.industry = industry ? industry.trim() : null;
+        }
 
-        const { data, error } = await supabaseAdmin
+        let { data, error } = await supabaseAdmin
           .from('review_clients')
           .update(updateFields)
           .eq('id', id)
           .select()
           .single();
+
+        if (error && error.code === 'PGRST204' && updateFields.industry !== undefined) {
+          console.warn("industry column not yet present in Supabase review_clients. Retrying without industry.");
+          delete updateFields.industry;
+          const retry = await supabaseAdmin.from('review_clients').update(updateFields).eq('id', id).select().single();
+          data = retry.data;
+          error = retry.error;
+        }
 
         if (error) {
           return new Response(JSON.stringify({ error: error.message }), { 
@@ -991,9 +1131,130 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
       } catch (err) {
         return new Response(JSON.stringify({ error: err.message }), { 
           status: 500, 
+        });
+      }
+    }
+  }
+
+  // Direct Cache Update (Admin only)
+  if (path === '/adminApiBlog/api/reviews/clients/cache' && method === 'PUT') {
+    if (!isAdmin) {
+      return new Response(JSON.stringify({ error: "Forbidden. Admin privileges required." }), { 
+        status: 403, 
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+      });
+    }
+
+    try {
+      const { clientId, cached_suggestions } = await request.json();
+      if (!clientId) {
+        return new Response(JSON.stringify({ error: "clientId is required." }), { 
+          status: 400, 
           headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
         });
       }
+
+      const now = new Date().toISOString();
+      const cleanSuggestions = Array.isArray(cached_suggestions) ? cached_suggestions.map(s => String(s || '').trim()).filter(Boolean) : [];
+
+      const { data, error } = await supabaseAdmin
+        .from('review_clients')
+        .update({
+          cached_suggestions: cleanSuggestions,
+          suggestions_cached_at: now
+        })
+        .eq('id', clientId)
+        .select('id, name, cached_suggestions, suggestions_cached_at')
+        .single();
+
+      if (error) {
+        return new Response(JSON.stringify({ error: error.message }), { 
+          status: 500, 
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+        });
+      }
+
+      await logAction(supabaseAdmin, payload.email, 'client_cache_direct_edit', { clientId, count: cleanSuggestions.length }, request.headers.get('CF-Connecting-IP') || '');
+
+      return new Response(JSON.stringify({ success: true, client: data }), { 
+        status: 200, 
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+      });
+    } catch (err) {
+      return new Response(JSON.stringify({ error: err.message }), { 
+        status: 500, 
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+      });
+    }
+  }
+
+  // Regenerate Cache On-Demand (Admin only)
+  if (path === '/adminApiBlog/api/reviews/clients/cache/regenerate' && method === 'POST') {
+    if (!isAdmin) {
+      return new Response(JSON.stringify({ error: "Forbidden. Admin privileges required." }), { 
+        status: 403, 
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+      });
+    }
+
+    try {
+      const { clientId } = await request.json();
+      if (!clientId) {
+        return new Response(JSON.stringify({ error: "clientId is required." }), { 
+          status: 400, 
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+        });
+      }
+
+      const { data: client, error: fetchErr } = await supabaseAdmin
+        .from('review_clients')
+        .select('*')
+        .eq('id', clientId)
+        .single();
+
+      if (fetchErr || !client) {
+        return new Response(JSON.stringify({ error: "Client not found." }), { 
+          status: 404, 
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+        });
+      }
+
+      let freshExamples = await generateAISuggestions(env, supabaseAdmin, client, client.custom_suggestions || [], 20);
+      let isLocal = false;
+      if (!freshExamples || freshExamples.length === 0) {
+        freshExamples = generateLocalSuggestions(client.name, client.ai_keywords, 20);
+        isLocal = true;
+      }
+
+      const now = new Date().toISOString();
+      const { data: updatedClient, error: updateErr } = await supabaseAdmin
+        .from('review_clients')
+        .update({
+          cached_suggestions: freshExamples,
+          suggestions_cached_at: now
+        })
+        .eq('id', clientId)
+        .select('id, name, cached_suggestions, suggestions_cached_at')
+        .single();
+
+      if (updateErr) {
+        return new Response(JSON.stringify({ error: updateErr.message }), { 
+          status: 500, 
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+        });
+      }
+
+      await logAction(supabaseAdmin, payload.email, 'client_cache_regenerated', { clientId, client_name: client.name, isLocal, count: freshExamples.length }, request.headers.get('CF-Connecting-IP') || '');
+
+      return new Response(JSON.stringify({ success: true, isLocal, client: updatedClient }), { 
+        status: 200, 
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+      });
+    } catch (err) {
+      return new Response(JSON.stringify({ error: err.message }), { 
+        status: 500, 
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+      });
     }
   }
 
@@ -1052,9 +1313,9 @@ export async function handleReviewRequest(request, env, ctx, path, method, url, 
       let client = null;
       let clientErr = null;
       
-      const resQuery = await supabaseAdmin
+      let resQuery = await supabaseAdmin
         .from('review_clients')
-        .select('name, email, google_review_link, ai_keywords, suggestion_type, custom_suggestions, copy_mode, logo_url, google_account_id, google_location_id')
+        .select('name, email, google_review_link, ai_keywords, industry, suggestion_type, custom_suggestions, copy_mode, logo_url, google_account_id, google_location_id')
         .eq('id', clientId)
         .maybeSingle();
 
@@ -1400,7 +1661,7 @@ export async function refreshSuggestionCache(env, supabaseAdmin) {
     // Fetch all AI-mode review_clients
     const { data: clients, error } = await supabaseAdmin
       .from('review_clients')
-      .select('id, name, ai_keywords, suggestion_type, custom_suggestions, cached_suggestions, suggestions_cached_at, suggestions_used_at')
+      .select('id, name, ai_keywords, industry, suggestion_type, custom_suggestions, cached_suggestions, suggestions_cached_at, suggestions_used_at')
       .eq('suggestion_type', 'ai');
 
     if (error || !clients || clients.length === 0) {
@@ -1456,11 +1717,7 @@ export async function refreshSuggestionCache(env, supabaseAdmin) {
 
         // If AI call failed or no key, generate 20 local fallback suggestions
         if (!freshExamples || freshExamples.length === 0) {
-          freshExamples = [];
-          for (let i = 0; i < 7; i++) {
-            freshExamples.push(...generateLocalSuggestions(client.name, client.ai_keywords));
-          }
-          freshExamples = freshExamples.slice(0, 20);
+          freshExamples = generateLocalSuggestions(client.name, client.ai_keywords, 20);
         }
 
         // Write fresh suggestions back to DB cache

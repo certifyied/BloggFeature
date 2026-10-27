@@ -1,3 +1,5 @@
+import { verifyJWT } from './auth.js';
+
 // --- Rate Limiter ---
 const contactRateLimiter = new Map();
 
@@ -647,51 +649,136 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
 
 
     // --- SITEMAPS API ---
-    if (path === '/adminApiBlog/api/sitemaps' && request.method === 'GET') {
-      const authHeader = request.headers.get('Authorization');
-      if (!authHeader || !authHeader.startsWith('Bearer ')) return new Response("Unauthorized", { status: 401, headers: corsHeaders });
-      const token = authHeader.substring(7);
-      const payload = await verifyJWT(env, token);
-      if (!payload) return new Response("Unauthorized", { status: 401, headers: corsHeaders });
+    if ((path === '/adminApiBlog/api/sitemaps' || path === '/api/sitemaps') && request.method === 'GET') {
+      let authUser = payload;
+      if (!authUser) {
+        const authHeader = request.headers.get('Authorization');
+        if (authHeader && authHeader.startsWith('Bearer ')) {
+          authUser = await verifyJWT(env, authHeader.substring(7));
+        }
+      }
+      if (!authUser) return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
       
-      const projectId = url.searchParams.get('projectId');
-      const { data, error } = await supabaseAdmin.from('sitemaps').select('*').eq('project_id', projectId);
-      if (error) return new Response(JSON.stringify({ error: error.message }), { status: 500, headers: corsHeaders });
-      return new Response(JSON.stringify({ sitemaps: data }), { status: 200, headers: corsHeaders });
+      const projectId = url.searchParams.get('projectId') || (authUser.projectId ? authUser.projectId : null);
+      if (!projectId) {
+        return new Response(JSON.stringify({ error: "Missing projectId parameter" }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      }
+      if (authUser.projectId && authUser.projectId !== projectId) {
+        return new Response(JSON.stringify({ error: "Forbidden: Access to this project is not allowed" }), { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      }
+
+      const { data, error } = await supabaseAdmin.from('sitemaps').select('*').eq('project_id', projectId).order('created_at', { ascending: false });
+      if (error) return new Response(JSON.stringify({ error: error.message }), { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ sitemaps: data || [] }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
-    if (path === '/adminApiBlog/api/sitemaps' && request.method === 'POST') {
-      const authHeader = request.headers.get('Authorization');
-      if (!authHeader || !authHeader.startsWith('Bearer ')) return new Response("Unauthorized", { status: 401, headers: corsHeaders });
-      const token = authHeader.substring(7);
-      const payload = await verifyJWT(env, token);
-      if (!payload) return new Response("Unauthorized", { status: 401, headers: corsHeaders });
+    if ((path === '/adminApiBlog/api/sitemaps' || path === '/api/sitemaps') && request.method === 'POST') {
+      let authUser = payload;
+      if (!authUser) {
+        const authHeader = request.headers.get('Authorization');
+        if (authHeader && authHeader.startsWith('Bearer ')) {
+          authUser = await verifyJWT(env, authHeader.substring(7));
+        }
+      }
+      if (!authUser) return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
       
-      const body = await request.json();
+      let body;
+      try {
+        body = await request.json();
+      } catch (e) {
+        return new Response(JSON.stringify({ error: "Invalid JSON body" }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      }
+
+      const targetProjectId = body.project_id || (authUser.projectId ? authUser.projectId : null);
+      if (!targetProjectId) {
+        return new Response(JSON.stringify({ error: "project_id is required" }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      }
+      if (authUser.projectId && authUser.projectId !== targetProjectId) {
+        return new Response(JSON.stringify({ error: "Forbidden: Cannot add sitemap to another project" }), { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      }
+      if (!body.loc) {
+        return new Response(JSON.stringify({ error: "loc (URL) is required" }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      }
+
       const { data, error } = await supabaseAdmin.from('sitemaps').insert({
-        project_id: body.project_id,
+        project_id: targetProjectId,
         loc: body.loc,
         changefreq: body.changefreq || 'monthly',
         priority: body.priority || 0.8
       }).select().single();
       
-      if (error) return new Response(JSON.stringify({ error: error.message }), { status: 500, headers: corsHeaders });
-      return new Response(JSON.stringify({ sitemap: data }), { status: 200, headers: corsHeaders });
+      if (error) return new Response(JSON.stringify({ error: error.message }), { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ sitemap: data }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
-    if (path === '/adminApiBlog/api/sitemap.xml' && request.method === 'GET') {
-      const projectId = url.searchParams.get('projectId');
-      const { data, error } = await supabaseAdmin.from('sitemaps').select('*').eq('project_id', projectId);
-      if (error) return new Response("Error", { status: 500, headers: corsHeaders });
-      
-      let xml = '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n';
-      for (const item of (data || [])) {
-        xml += '  <url>\n    <loc>' + item.loc + '</loc>\n    <changefreq>' + item.changefreq + '</changefreq>\n    <priority>' + item.priority + '</priority>\n  </url>\n';
+    const sitemapDeleteMatch = path.match(/^\/adminApiBlog\/api\/sitemaps\/([a-zA-Z0-9_-]+)$/) || path.match(/^\/api\/sitemaps\/([a-zA-Z0-9_-]+)$/);
+    if ((sitemapDeleteMatch || path === '/adminApiBlog/api/sitemaps' || path === '/api/sitemaps') && request.method === 'DELETE') {
+      let authUser = payload;
+      if (!authUser) {
+        const authHeader = request.headers.get('Authorization');
+        if (authHeader && authHeader.startsWith('Bearer ')) {
+          authUser = await verifyJWT(env, authHeader.substring(7));
+        }
       }
+      if (!authUser) return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+
+      const sitemapId = (sitemapDeleteMatch ? sitemapDeleteMatch[1] : null) || url.searchParams.get('id');
+      if (!sitemapId) {
+        return new Response(JSON.stringify({ error: "Missing sitemap id" }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      }
+
+      let deleteQuery = supabaseAdmin.from('sitemaps').delete().eq('id', sitemapId);
+      if (authUser.projectId) {
+        deleteQuery = deleteQuery.eq('project_id', authUser.projectId);
+      }
+      const { error } = await deleteQuery;
+      if (error) return new Response(JSON.stringify({ error: error.message }), { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ success: true }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    }
+
+    if ((path === '/adminApiBlog/api/sitemap.xml' || path === '/api/sitemap.xml') && request.method === 'GET') {
+      const projectId = url.searchParams.get('projectId');
+      if (!projectId) {
+        return new Response("Missing projectId parameter", { status: 400, headers: corsHeaders });
+      }
+
+      const { data: staticEntries, error } = await supabaseAdmin.from('sitemaps').select('*').eq('project_id', projectId);
+      if (error) return new Response("Error loading sitemaps: " + error.message, { status: 500, headers: corsHeaders });
+
+      // Fetch blogs for this project as well
+      const { data: projectBlogs } = await supabaseAdmin.from('blogs').select('slug, updated_at').eq('project_id', projectId);
+
+      const escapeXml = (str) => {
+        return String(str || '').replace(/[<>&'"]/g, c => {
+          switch (c) {
+            case '<': return '&lt;';
+            case '>': return '&gt;';
+            case '&': return '&amp;';
+            case '\'': return '&apos;';
+            case '"': return '&quot;';
+          }
+        });
+      };
+
+      let xml = '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n';
+      
+      // Static links
+      for (const item of (staticEntries || [])) {
+        xml += '  <url>\n    <loc>' + escapeXml(item.loc) + '</loc>\n    <changefreq>' + escapeXml(item.changefreq || 'monthly') + '</changefreq>\n    <priority>' + escapeXml(item.priority || 0.8) + '</priority>\n  </url>\n';
+      }
+
+      // Project Blogs
+      const origin = url.origin;
+      for (const b of (projectBlogs || [])) {
+        const blogUrl = `${origin}/adminApiBlog/blog/${b.slug}?project=${encodeURIComponent(projectId)}`;
+        const lastmod = b.updated_at ? new Date(b.updated_at).toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
+        xml += '  <url>\n    <loc>' + escapeXml(blogUrl) + '</loc>\n    <lastmod>' + lastmod + '</lastmod>\n    <changefreq>weekly</changefreq>\n    <priority>0.9</priority>\n  </url>\n';
+      }
+
       xml += '</urlset>';
       
       const xmlHeaders = new Headers(corsHeaders);
-      xmlHeaders.set('Content-Type', 'application/xml');
+      xmlHeaders.set('Content-Type', 'application/xml; charset=utf-8');
       xmlHeaders.set('Cache-Control', 'public, max-age=3600');
       return new Response(xml, { status: 200, headers: xmlHeaders });
     }
@@ -2169,6 +2256,7 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
             <input type="text" id="new-static-link" placeholder="Full URL (e.g. https://domain.com/about)" style="flex-grow: 1; margin: 0; padding: 12px; border-radius: 8px;">
             <button class="btn" style="padding: 10px 20px;" onclick="addStaticLink()">Add Link</button>
           </div>
+          <div id="static-links-list" style="margin-top: 15px; display: flex; flex-direction: column; gap: 8px;"></div>
         </div>
 
         <div class="card">
@@ -2319,7 +2407,12 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
       logoEl.src = logoSrc;
     }
 
-    if (urlToken) {
+    if (token === 'null' || token === 'undefined') {
+      token = null;
+      localStorage.removeItem('blog_auth_token');
+    }
+
+    if (urlToken && urlToken !== 'null' && urlToken !== 'undefined') {
       token = urlToken;
       localStorage.setItem('blog_auth_token', token);
       showDashboard();
@@ -2327,6 +2420,10 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
       verifyMagicToken(magicToken);
     } else if (token) {
       showDashboard();
+    } else if (window.parent !== window) {
+      try {
+        window.parent.postMessage({ type: 'REQUEST_AUTH_TOKEN' }, '*');
+      } catch (e) {}
     }
 
     window.addEventListener('message', (event) => {
@@ -2396,22 +2493,30 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
     }
 
     function getPayload() {
-      if (!token) return null;
+      if (!token || typeof token !== 'string') return null;
       try {
-        const base64Url = token.split('.')[1];
-        const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
-        const jsonPayload = decodeURIComponent(window.atob(base64).split('').map(function(c) {
-            return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
-        }).join(''));
-        return JSON.parse(jsonPayload);
+        const parts = token.split('.');
+        if (parts.length < 2) return null;
+        let base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+        while (base64.length % 4) base64 += '=';
+        try {
+          const jsonPayload = decodeURIComponent(window.atob(base64).split('').map(function(c) {
+              return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
+          }).join(''));
+          return JSON.parse(jsonPayload);
+        } catch (e1) {
+          return JSON.parse(window.atob(base64));
+        }
       } catch (e) {
         return null;
       }
     }
 
     function showDashboard() {
-      document.getElementById('view-auth').classList.remove('tab-active');
-      document.getElementById('view-dashboard').classList.add('tab-active');
+      const authBox = document.getElementById('view-auth');
+      const dashBox = document.getElementById('view-dashboard');
+      if (authBox) authBox.classList.remove('tab-active');
+      if (dashBox) dashBox.classList.add('tab-active');
       
       const payload = getPayload();
       const role = payload ? payload.role : 'blogger';
@@ -2435,16 +2540,20 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
       if (payload && payload.projectId) {
         // Go straight to the single project detail
         selectedProjectId = payload.projectId;
-        document.getElementById('detail-project-name').innerText = "Assigned Workspace";
-        document.getElementById('detail-project-id').innerText = "Project ID: " + payload.projectId;
+        const nameEl = document.getElementById('detail-project-name');
+        if (nameEl) nameEl.innerText = "Assigned Workspace";
+        const idEl = document.getElementById('detail-project-id');
+        if (idEl) idEl.innerText = "Project ID: " + payload.projectId;
         
         // Hide the back-to-projects button
-        document.getElementById('btn-back-to-projects').style.display = 'none';
+        const backBtn = document.getElementById('btn-back-to-projects');
+        if (backBtn) backBtn.style.display = 'none';
         
         showPanel('panel-project-detail');
         loadBlogs();
       } else {
-        document.getElementById('btn-back-to-projects').style.display = 'block';
+        const backBtn = document.getElementById('btn-back-to-projects');
+        if (backBtn) backBtn.style.display = 'block';
         showPanel('panel-projects');
         loadProjects();
       }
@@ -2453,8 +2562,15 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
     function logout() {
       localStorage.removeItem('blog_auth_token');
       token = null;
-      document.getElementById('view-dashboard').classList.remove('tab-active');
-      document.getElementById('view-auth').classList.add('tab-active');
+      if (window.parent !== window) {
+        try {
+          window.parent.postMessage({ type: 'LOGOUT' }, '*');
+        } catch(e) {}
+      }
+      const authBox = document.getElementById('view-auth');
+      const dashBox = document.getElementById('view-dashboard');
+      if (dashBox) dashBox.classList.remove('tab-active');
+      if (authBox) authBox.classList.add('tab-active');
       showEmailStep();
     }
 
@@ -2551,7 +2667,14 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
         const projRes = await fetch(baseUrl + "/api/projects", {
           headers: { "Authorization": "Bearer " + token }
         });
-        if (projRes.status === 401) return logout();
+        if (projRes.status === 401) {
+          if (window.parent !== window) {
+            console.warn("Unauthorized on /api/projects, requesting fresh auth token from parent");
+            window.parent.postMessage({ type: 'REQUEST_AUTH_TOKEN' }, '*');
+            return;
+          }
+          return logout();
+        }
         const projData = await projRes.json();
         projectsCache = projData.projects || [];
         
@@ -2760,6 +2883,10 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
         const res = await fetch(baseUrl + "/api/blogs?projectId=" + selectedProjectId, {
           headers: { "Authorization": "Bearer " + token }
         });
+        if (res.status === 401 && window.parent !== window) {
+          window.parent.postMessage({ type: 'REQUEST_AUTH_TOKEN' }, '*');
+          return;
+        }
         const data = await res.json();
         blogsCache = data.blogs || [];
         renderBlogs();
@@ -2910,11 +3037,91 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
           container.appendChild(div);
         });
       }
+      loadStaticLinks();
       showPanel('panel-sitemaps');
     }
 
+    async function loadStaticLinks() {
+      const listContainer = document.getElementById('static-links-list');
+      if (!listContainer) return;
+      listContainer.innerHTML = '<div style="color: var(--text-dim); font-size: 13px;">Loading static links...</div>';
+      try {
+        const res = await fetch(baseUrl + "/api/sitemaps?projectId=" + encodeURIComponent(selectedProjectId), {
+          headers: {
+            "Authorization": "Bearer " + token
+          }
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          listContainer.innerHTML = '<div style="color: #ef4444; font-size: 13px;">' + (data.error || 'Failed to load static links') + '</div>';
+          return;
+        }
+        const sitemaps = data.sitemaps || [];
+        if (sitemaps.length === 0) {
+          listContainer.innerHTML = '<div style="color: var(--text-dim); font-size: 13px;">No static links added yet.</div>';
+          return;
+        }
+        listContainer.innerHTML = '';
+        sitemaps.forEach(item => {
+          const row = document.createElement('div');
+          row.style.display = 'flex';
+          row.style.justifyContent = 'space-between';
+          row.style.alignItems = 'center';
+          row.style.padding = '8px 12px';
+          row.style.background = 'var(--card-bg, rgba(255,255,255,0.03))';
+          row.style.borderRadius = '6px';
+          row.style.border = '1px solid var(--border, rgba(255,255,255,0.08))';
+
+          const linkSpan = document.createElement('span');
+          linkSpan.style.fontFamily = 'monospace';
+          linkSpan.style.fontSize = '13px';
+          linkSpan.style.overflow = 'hidden';
+          linkSpan.style.textOverflow = 'ellipsis';
+          linkSpan.style.whiteSpace = 'nowrap';
+          linkSpan.innerText = item.loc;
+
+          const delBtn = document.createElement('button');
+          delBtn.className = 'btn btn-secondary';
+          delBtn.style.padding = '4px 10px';
+          delBtn.style.fontSize = '12px';
+          delBtn.style.color = '#ef4444';
+          delBtn.innerText = 'Delete';
+          delBtn.onclick = async () => {
+            if (!confirm('Delete ' + item.loc + ' from sitemap?')) return;
+            await deleteStaticLink(item.id);
+          };
+
+          row.appendChild(linkSpan);
+          row.appendChild(delBtn);
+          listContainer.appendChild(row);
+        });
+      } catch (e) {
+        listContainer.innerHTML = '<div style="color: #ef4444; font-size: 13px;">Error loading static links: ' + e.message + '</div>';
+      }
+    }
+
+    async function deleteStaticLink(id) {
+      try {
+        const res = await fetch(baseUrl + "/api/sitemaps/" + id, {
+          method: "DELETE",
+          headers: {
+            "Authorization": "Bearer " + token
+          }
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok) {
+          showToast("Link removed from sitemap!");
+          loadStaticLinks();
+        } else {
+          showToast(data.error || "Failed to delete link");
+        }
+      } catch (e) {
+        showToast("Error deleting link: " + e.message);
+      }
+    }
+
     function copyAllSitemaps() {
-      const links = blogsCache.map(b => baseUrl + '/blog/' + b.slug + '?project=' + selectedProjectId).join('\\n');
+      const links = blogsCache.map(b => baseUrl + '/blog/' + b.slug + '?project=' + selectedProjectId).join('\n');
       navigator.clipboard.writeText(links);
       showToast("All blog links copied to clipboard!");
     }
@@ -2948,14 +3155,16 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
             priority: 0.8
           })
         });
+        const data = await res.json().catch(() => ({}));
         if (res.ok) {
           showToast("Static link added to XML sitemap successfully!");
           document.getElementById('new-static-link').value = '';
+          loadStaticLinks();
         } else {
-          showToast("Failed to add link");
+          showToast(data.error || "Failed to add link");
         }
       } catch (e) {
-        showToast("Error adding link");
+        showToast("Error adding link: " + e.message);
       }
     }
 
