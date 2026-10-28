@@ -736,7 +736,7 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
       return new Response(JSON.stringify({ success: true }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
-    if ((path === '/adminApiBlog/api/sitemap.xml' || path === '/api/sitemap.xml') && request.method === 'GET') {
+    if ((path === '/adminApiBlog/api/sitemap.xml' || path === '/api/sitemap.xml' || path === '/adminApiBlog/sitemap.xml' || path === '/sitemap.xml') && request.method === 'GET') {
       const projectId = url.searchParams.get('projectId');
       if (!projectId) {
         return new Response("Missing projectId parameter", { status: 400, headers: corsHeaders });
