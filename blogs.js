@@ -56,7 +56,7 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
     }
 
     // --- Embed JS script for external sites ---
-    if (path === '/adminApiBlog/api/embed' && request.method === 'GET') {
+    if ((path === '/adminApiBlog/api/embed' || path === '/blog-embed.js' || path === '/adminApiBlog/blog-embed.js') && (request.method === 'GET' || request.method === 'HEAD')) {
       let rawColor = url.searchParams.get('color') || '10b981';
       if (rawColor.startsWith('#')) rawColor = rawColor.substring(1);
       if (!/^[0-9A-Fa-f]{6}$/i.test(rawColor) && !/^[0-9A-Fa-f]{3}$/i.test(rawColor)) {
@@ -306,8 +306,8 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
   const fallbackImg = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="100%" fill="%23e2e8f0"><rect width="100%" height="100%"/></svg>';
 
   async function checkAndRender() {
-    const listContainer = document.getElementById('certifyied-blog-container');
-    const postContainer = document.getElementById('certifyied-blog-post');
+    const listContainer = document.getElementById('certifyied-blog-container') || document.getElementById('certifyied-blog-feed');
+    const postContainer = document.getElementById('certifyied-blog-post') || document.getElementById('certifyied-blog-reader');
 
     // --- RENDERING LIST MODE (with pagination) ---
     if (listContainer && !listContainer.dataset.rendered) {
@@ -638,7 +638,7 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
   }
 })();
       `;
-      return new Response(embedScript, {
+      return new Response(request.method === 'HEAD' ? null : embedScript, {
         headers: {
           'Content-Type': 'application/javascript',
           'Cache-Control': 'no-cache, no-store, must-revalidate',
