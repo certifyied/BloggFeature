@@ -1990,6 +1990,32 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
       white-space: pre-wrap;
       word-break: break-all;
     }
+    details.snippet-accordion {
+      margin-top: 15px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px 16px;
+      background: #f8fafc;
+      transition: all 0.2s ease;
+    }
+    details.snippet-accordion[open] {
+      background: #ffffff;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+    }
+    details.snippet-accordion summary {
+      cursor: pointer;
+      font-weight: 600;
+      font-size: 13px;
+      color: var(--text);
+      user-select: none;
+      outline: none;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    details.snippet-accordion summary::-webkit-details-marker {
+      color: var(--primary);
+    }
     .sitemap-item {
       display: flex;
       justify-content: space-between;
@@ -2196,14 +2222,36 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
           <label>Embed HTML Snippet (Home Page)</label>
           <div id="integration-snippet-home" class="snippet-box"></div>
           <button class="btn" style="margin-top: 15px;" onclick="copySnippetHome()">Copy Home Page Snippet</button>
+
+          <details class="snippet-accordion">
+            <summary>▶ View Implementation Example (HTML)</summary>
+            <div style="margin-top: 10px;">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                <span style="font-size: 12px; font-family: monospace; color: var(--muted);">index.html</span>
+                <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 11px;" onclick="copyHomeExample()">Copy Example</button>
+              </div>
+              <div id="integration-example-home" class="snippet-box" style="margin-top: 0; background: #0b1120;"></div>
+            </div>
+          </details>
         </div>
 
         <div class="card" style="margin-top: 20px;">
           <h3>2. Blog Page Integration (Single Post Reader)</h3>
-          <p style="margin-top: 5px; margin-bottom: 15px;">Copy the code below and place it on your Blog detail page. The script will dynamically load the post based on URL path (e.g. \`/blog/1\`) or query params (e.g. \`?id=1\`).</p>
+          <p style="margin-top: 5px; margin-bottom: 15px;">Copy the code below and place it on your Blog detail page. The script will dynamically load the post based on URL path (e.g. `/blog/1`) or query params (e.g. `?id=1`).</p>
           <label>Embed HTML Snippet (Blog Page)</label>
           <div id="integration-snippet-blog" class="snippet-box"></div>
           <button class="btn" style="margin-top: 15px;" onclick="copySnippetBlog()">Copy Blog Page Snippet</button>
+
+          <details class="snippet-accordion">
+            <summary>▶ View Implementation Example (Single Post HTML)</summary>
+            <div style="margin-top: 10px;">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                <span style="font-size: 12px; font-family: monospace; color: var(--muted);">blog-post.html</span>
+                <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 11px;" onclick="copyReaderExample()">Copy Example</button>
+              </div>
+              <div id="integration-example-reader" class="snippet-box" style="margin-top: 0; background: #0b1120;"></div>
+            </div>
+          </details>
         </div>
 
         <div class="card" style="margin-top: 20px;">
@@ -2230,6 +2278,27 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
   // The actual message (Required)
   "message": "Hello! I would like to learn more..."
 }</pre>
+
+          <details class="snippet-accordion">
+            <summary>▶ View Integration Examples (cURL & Fetch)</summary>
+            <div style="margin-top: 12px; display: flex; flex-direction: column; gap: 12px;">
+              <div>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                  <span style="font-size: 12px; font-family: monospace; color: var(--muted);">cURL Request</span>
+                  <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 11px;" onclick="copyContactCurl()">Copy cURL</button>
+                </div>
+                <div id="integration-example-contact-curl" class="snippet-box" style="margin-top: 0; background: #0b1120;"></div>
+              </div>
+
+              <div>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                  <span style="font-size: 12px; font-family: monospace; color: var(--muted);">JavaScript / Fetch Example</span>
+                  <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 11px;" onclick="copyContactJs()">Copy JS</button>
+                </div>
+                <div id="integration-example-contact-js" class="snippet-box" style="margin-top: 0; background: #0b1120; color: #93c5fd;"></div>
+              </div>
+            </div>
+          </details>
         </div>
       </div>
 
@@ -2980,9 +3049,89 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
 
       const contactApiSnippet = baseUrl + '/api/contact?projectId=' + selectedProjectId;
 
+      const homeExample = '<!DOCTYPE html>\\n' +
+        '<html lang="en">\\n' +
+        '<head>\\n' +
+        '  <meta charset="UTF-8" />\\n' +
+        '  <title>Blog Feed Example</title>\\n' +
+        '</head>\\n' +
+        '<body>\\n' +
+        '  <div style="max-width: 1200px; margin: 0 auto; padding: 40px 16px;">\\n' +
+        '    <h1>Our Blog</h1>\\n' +
+        '    <!-- Blog Grid Container -->\\n' +
+        '    <div id="certifyied-blog-container" data-project-id="' + selectedProjectId + '" data-limit="9" data-redirect-url="/blog"></div>\\n' +
+        '  </div>\\n\\n' +
+        '  <!-- Certifyied Embed Script -->\\n' +
+        '  <script src="' + baseUrl + '/api/embed" async defer></script>\\n' +
+        '</body>\\n' +
+        '</html>';
+
+      const readerExample = '<!DOCTYPE html>\\n' +
+        '<html lang="en">\\n' +
+        '<head>\\n' +
+        '  <meta charset="UTF-8" />\\n' +
+        '  <title>Article Reader</title>\\n' +
+        '</head>\\n' +
+        '<body>\\n' +
+        '  <div style="max-width: 860px; margin: 0 auto; padding: 40px 16px;">\\n' +
+        '    <!-- Single Blog Post Container -->\\n' +
+        '    <div id="certifyied-blog-post" data-project-id="' + selectedProjectId + '"></div>\\n' +
+        '  </div>\\n\\n' +
+        '  <!-- Certifyied Embed Script -->\\n' +
+        '  <script src="' + baseUrl + '/api/embed" async defer></script>\\n' +
+        '</body>\\n' +
+        '</html>';
+
+      const contactCurl = 'curl -X POST "' + contactApiSnippet + '" \\\\\\n' +
+        '  -H "Content-Type: application/json" \\\\\\n' +
+        '  -d \\'{\\n' +
+        '    "sender_name": "Jane Smith",\\n' +
+        '    "sender_email": "jane@example.com",\\n' +
+        '    "phone_number": "+1 555-123-4567",\\n' +
+        '    "subject": "Inquiry",\\n' +
+        '    "message": "Hello, I would like to learn more about your services."\\n' +
+        '  }\\';
+
+      const contactJs = '// JavaScript / Fetch Example\\n' +
+        'async function submitContactForm(event) {\\n' +
+        '  event.preventDefault();\\n\\n' +
+        '  const payload = {\\n' +
+        '    sender_name: "Jane Smith",\\n' +
+        '    sender_email: "jane@example.com",\\n' +
+        '    phone_number: "+1 555-123-4567",\\n' +
+        '    subject: "Inquiry",\\n' +
+        '    message: "Hello, I would like to learn more about your services."\\n' +
+        '  };\\n\\n' +
+        '  try {\\n' +
+        '    const res = await fetch("' + contactApiSnippet + '", {\\n' +
+        '      method: "POST",\\n' +
+        '      headers: { "Content-Type": "application/json" },\\n' +
+        '      body: JSON.stringify(payload)\\n' +
+        '    });\\n' +
+        '    const data = await res.json();\\n' +
+        '    if (res.ok) alert("Message sent successfully!");\\n' +
+        '    else alert("Error: " + (data.error || "Failed to submit"));\\n' +
+        '  } catch (err) {\\n' +
+        '    alert("Network error occurred.");\\n' +
+        '  }\\n' +
+        '}';
+
       document.getElementById('integration-snippet-home').innerText = homeSnippet;
       document.getElementById('integration-snippet-blog').innerText = blogSnippet;
       document.getElementById('integration-snippet-contact-api').innerText = contactApiSnippet;
+      
+      const exHome = document.getElementById('integration-example-home');
+      if (exHome) exHome.innerText = homeExample;
+
+      const exReader = document.getElementById('integration-example-reader');
+      if (exReader) exReader.innerText = readerExample;
+
+      const exCurl = document.getElementById('integration-example-contact-curl');
+      if (exCurl) exCurl.innerText = contactCurl;
+
+      const exJs = document.getElementById('integration-example-contact-js');
+      if (exJs) exJs.innerText = contactJs;
+
       showPanel('panel-integrations');
     }
 
@@ -2999,6 +3148,38 @@ export async function handleBlogRequest(request, env, ctx, path, method, url, pa
     function copyContactAPI() {
       navigator.clipboard.writeText(document.getElementById('integration-snippet-contact-api').innerText);
       showToast("Contact API Endpoint URL copied to clipboard!");
+    }
+
+    function copyHomeExample() {
+      const el = document.getElementById('integration-example-home');
+      if (el) {
+        navigator.clipboard.writeText(el.innerText);
+        showToast("Home Page example HTML copied to clipboard!");
+      }
+    }
+
+    function copyReaderExample() {
+      const el = document.getElementById('integration-example-reader');
+      if (el) {
+        navigator.clipboard.writeText(el.innerText);
+        showToast("Single Post example HTML copied to clipboard!");
+      }
+    }
+
+    function copyContactCurl() {
+      const el = document.getElementById('integration-example-contact-curl');
+      if (el) {
+        navigator.clipboard.writeText(el.innerText);
+        showToast("cURL example copied to clipboard!");
+      }
+    }
+
+    function copyContactJs() {
+      const el = document.getElementById('integration-example-contact-js');
+      if (el) {
+        navigator.clipboard.writeText(el.innerText);
+        showToast("JavaScript example copied to clipboard!");
+      }
     }
 
     // --- SITEMAPS GENERATOR ---
